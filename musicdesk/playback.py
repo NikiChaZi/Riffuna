@@ -61,6 +61,7 @@ class Playback(QObject):
         self._token = ""
         self._expected_url = ""
         self._resolving = False
+        self._pending_seek = None
         self._want_play = False
         self._history_logged = False
         self._tasks: dict[str, Task] = {}
@@ -123,9 +124,11 @@ class Playback(QObject):
         self._history_logged = False
         self._opened_at = time.perf_counter()
         self.last_start_ms = None
-        self.seek_guard.reset()
+        self._pending_seek = None
+        self.seek_guard.begin()
         self.player.stop()
         self.player.setSource(QUrl())
+        self.seek_guard.observe()
         self.relay.clear()
         self.track_changed.emit(track)
         self.state_changed.emit("loading")
@@ -208,12 +211,13 @@ class Playback(QObject):
         if token != self._token:
             return
         self._resolving = False
+        self._pending_seek = None
         self._want_play = False
         self.state_changed.emit("error")
         self.error.emit(message)
 
     def toggle(self):
-        if self._resolving:
+        if self._resolving or self._pending_seek is not None:
             self._want_play = not self._want_play
             self.state_changed.emit("loading" if self._want_play else "paused")
         elif not self._expected_url:
@@ -237,7 +241,7 @@ class Playback(QObject):
 
     def previous(self):
         if self.player.position() > 3000 and self._expected_url:
-            self.player.setPosition(0)
+            self.seek(0)
         elif self.queue.advance(-1, repeat=self.repeat):
             self._current = self.queue.current
             self._save_queue()
@@ -253,17 +257,37 @@ class Playback(QObject):
     def stop(self):
         self._token = uuid.uuid4().hex  # Invalidate any late network result.
         self._resolving = False
+        self._pending_seek = None
         self._want_play = False
         self._expected_url = ""
-        self.seek_guard.reset()
+        self.seek_guard.begin()
         self.player.stop()
         self.player.setSource(QUrl())
+        self.seek_guard.reset()
         self.relay.clear()
         self.state_changed.emit("stopped")
 
     def seek(self, milliseconds: int):
-        if self._expected_url:
-            self.seek_guard.seek(max(0, milliseconds))
+        if not self._expected_url:
+            return
+        target = max(0, milliseconds)
+        duration = self.player.duration()
+        if duration > 0:
+            target = min(target, duration)
+        source = self._expected_url
+        self._pending_seek = target
+        self._expected_url = ""
+        self.seek_guard.begin(target)
+        self.player.stop()
+        # Clearing the source destroys the old playback engine and waits for
+        # its renderer threads; setPosition alone tears them down asynchronously.
+        # The relay and its audio cache stay alive, so this does not re-resolve
+        # YouTube or redownload a fully buffered track.
+        self.player.setSource(QUrl())
+        self.seek_guard.observe()
+        self._expected_url = source
+        self.state_changed.emit("loading" if self._want_play else "paused")
+        self.player.setSource(QUrl(source))
 
     def set_volume(self, value: int):
         self.seek_guard.set_volume(value / 100)
@@ -288,10 +312,18 @@ class Playback(QObject):
     def _media_status(self, status):
         if not self._expected_url:
             return
+        if self._pending_seek is not None:
+            if status == QMediaPlayer.MediaStatus.LoadedMedia:
+                target, self._pending_seek = self._pending_seek, None
+                self.player.setPosition(target)
+                if self._want_play:
+                    self.player.play()
+                else:
+                    self.state_changed.emit("paused")
+            return
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             if self.repeat_mode == "one":
-                self.player.setPosition(0)
-                self.player.play()
+                self.seek(0)
             elif self.queue.advance(repeat=self.repeat):
                 self._current = self.queue.current
                 self._save_queue()
@@ -308,6 +340,7 @@ class Playback(QObject):
             return
         self._expected_url = ""
         self._want_play = False
+        self._pending_seek = None
         self.seek_guard.reset()
         if self.current:
             self.relay.invalidate_cached(self.current.video_id)
@@ -324,7 +357,7 @@ class Playback(QObject):
         self.stop()
         self.library.save_queue(self.queue)
         self.library.save_current(self.current)
-        self.library.set_setting("volume", str(self.output.volume()))
+        self.library.set_setting("volume", str(self.seek_guard.volume))
         self.pool.clear()
         self.pool.waitForDone(100)
         self.prefetch_pool.clear()

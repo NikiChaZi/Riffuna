@@ -1,11 +1,13 @@
-"""Silence decoder discontinuities during a seek, then restore volume smoothly."""
+"""Keep transitions silent until packets from the new decoder have arrived."""
 import time
 
-from PySide6.QtCore import QObject, QTimer
-from PySide6.QtMultimedia import QAudioBufferOutput, QMediaPlayer
+from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtMultimedia import QAudioBufferOutput
 
 
 class SeekAudioGuard(QObject):
+    audio_buffer_received = Signal(object)
+
     def __init__(self, player, output, parent=None, clock=time.monotonic):
         super().__init__(parent)
         self.player = player
@@ -14,56 +16,72 @@ class SeekAudioGuard(QObject):
         self.clock = clock
         self.target = None
         self.fresh = False
+        self.fresh_at = None
         self.ramp_started = None
-        self.buffers = QAudioBufferOutput(self)
-        player.setAudioBufferOutput(self.buffers)
-        self.buffers.audioBufferReceived.connect(self._buffer)
+        self.generation = 0
+        self.buffers = None
         self.timer = QTimer(self)
         self.timer.setInterval(10)
         self.timer.timeout.connect(self._tick)
+        self.observe()
 
     def set_volume(self, value):
         self.volume = min(1.0, max(0.0, value))
         if self.target is None:
             self.output.setVolume(self.volume)
 
-    def seek(self, milliseconds):
+    def begin(self, milliseconds=0):
+        """Call BEFORE stop/clear; never restore an old sink's volume."""
+        self.generation += 1
+        self.timer.stop()
         self.target = max(0, milliseconds)
-        self.started = self.clock()
         self.fresh = False
+        self.fresh_at = None
         self.ramp_started = None
         self.output.setVolume(0)
-        self.player.setPosition(self.target)
-        self.timer.start()
 
-    def _buffer(self, buffer):
-        if self.target is not None and buffer.isValid():
-            position = buffer.startTime() / 1000
-            # Ignore packets from the previous position still being drained.
-            if self.target - 100 <= position <= self.target + 3000:
-                self.fresh = True
+    def observe(self):
+        """Reconnect after source teardown; queued old callbacks keep old tokens."""
+        if self.buffers is None:
+            self.buffers = QAudioBufferOutput(self)
+            self.player.setAudioBufferOutput(self.buffers)
+        else:
+            self.buffers.audioBufferReceived.disconnect(self._buffer_slot)
+        generation = self.generation
+        self._buffer_slot = lambda buffer, generation=generation: self._buffer(buffer, generation)
+        self.buffers.audioBufferReceived.connect(self._buffer_slot)
+
+    def _buffer(self, buffer, generation=None):
+        if generation is not None and generation != self.generation:
+            return
+        self.audio_buffer_received.emit(buffer)
+        if generation is not None and generation != self.generation:
+            return
+        if self.target is None or not buffer.isValid():
+            return
+        position = buffer.startTime() / 1000
+        if self.target - 100 <= position <= self.target + 3000:
+            if not self.fresh:
+                self.fresh_at = self.clock()
+            self.fresh = True
+            self.timer.start()
 
     def _tick(self):
-        if self.target is None:
+        if self.target is None or not self.fresh:
             return
         now = self.clock()
-        elapsed = now - self.started
-        paused = self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState
-        # Some backends do not emit decoded-buffer notifications. Their native
-        # buffered state and position provide a bounded fallback after one second.
-        ready = (self.player.mediaStatus() == QMediaPlayer.MediaStatus.BufferedMedia
-                 and self.target - 100 <= self.player.position() <= self.target + 5000)
         if self.ramp_started is None:
-            if elapsed < 0.12 or not (self.fresh or paused or (elapsed >= 1 and ready)):
+            if now - self.fresh_at < .04:
                 return
             self.ramp_started = now
-        fraction = min(1.0, (now - self.ramp_started) / 0.08)
+        fraction = min(1.0, (now - self.ramp_started) / .06)
         self.output.setVolume(self.volume * fraction)
         if fraction >= 1:
-            self.reset()
+            self.timer.stop()
+            self.target = None
+            self.ramp_started = None
 
     def reset(self):
-        self.timer.stop()
+        """Cancel callbacks and keep silence; requested volume is independent."""
+        self.begin()
         self.target = None
-        self.ramp_started = None
-        self.output.setVolume(self.volume)

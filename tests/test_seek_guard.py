@@ -60,16 +60,19 @@ def test_seek_silences_old_packets_and_restores_latest_volume_smoothly():
     player, output = Player(), Output()
     guard = SeekAudioGuard(player, output, clock=lambda: now[0])
     try:
-        guard.seek(60000)
+        guard.begin(60000)
+        guard.observe()
+        player.setPosition(60000)
         assert output.value == 0
         guard._buffer(Buffer(2000))
         now[0] = .5
         guard._tick()
         assert output.value == 0
         guard._buffer(Buffer(60000))
+        now[0] += .05
         guard._tick()
         guard.set_volume(.8)
-        now[0] += .04
+        now[0] += .03
         guard._tick()
         assert .3 < output.value < .5
         now[0] += .05
@@ -87,19 +90,76 @@ def test_new_seek_invalidates_old_target_and_paused_seek_stays_paused():
     player, output = Player(), Output()
     guard = SeekAudioGuard(player, output, clock=lambda: now[0])
     try:
-        guard.seek(60000)
+        guard.begin(60000)
+        guard.observe()
+        player.setPosition(60000)
         guard._buffer(Buffer(60000))
-        guard.seek(10000)
+        old_generation = guard.generation
+        guard.begin(10000)
+        guard.observe()
+        player.setPosition(10000)
         guard._buffer(Buffer(60000))
         now[0] = .5
         guard._tick()
         assert output.value == 0
         player.state = QMediaPlayer.PlaybackState.PausedState
         guard._tick()
+        now[0] += 2
+        guard._tick()
+        assert output.value == 0
+        guard._buffer(Buffer(10000), old_generation)
+        guard._tick()
+        assert not guard.fresh and output.value == 0
+        player.state = QMediaPlayer.PlaybackState.PlayingState
+        guard._buffer(Buffer(10000), guard.generation)
+        now[0] += .05
+        guard._tick()
         now[0] += .1
         guard._tick()
         assert output.value == .6
-        assert player.state == QMediaPlayer.PlaybackState.PausedState
+        assert player.state == QMediaPlayer.PlaybackState.PlayingState
         assert player.positions == [60000, 10000]
+    finally:
+        guard.reset()
+
+
+def test_switch_and_stop_never_restore_volume_from_previous_generation():
+    app = QApplication.instance() or QApplication([])
+    now = [0.0]
+    player, output = Player(), Output()
+    guard = SeekAudioGuard(player, output, clock=lambda: now[0])
+    original_buffer_output = guard.buffers
+    try:
+        guard.begin(20000)
+        guard.observe()
+        old_generation = guard.generation
+        guard._buffer(Buffer(20000), old_generation)
+        guard.begin(0)
+        guard.observe()
+        assert guard.buffers is original_buffer_output
+        guard._buffer(Buffer(0), old_generation)
+        now[0] += 5
+        guard._tick()
+        assert not guard.fresh and output.value == 0
+        guard.reset()
+        assert guard.volume == .6
+        assert output.value == 0
+        assert output.muted is True
+    finally:
+        guard.reset()
+
+
+def test_buffer_listener_starting_new_transition_cannot_unmute_from_old_packet():
+    app = QApplication.instance() or QApplication([])
+    player, output = Player(), Output()
+    guard = SeekAudioGuard(player, output)
+    try:
+        guard.begin(0)
+        guard.observe()
+        generation = guard.generation
+        guard.audio_buffer_received.connect(lambda buffer: guard.begin(0))
+        guard._buffer(Buffer(0), generation)
+        assert not guard.fresh
+        assert output.value == 0
     finally:
         guard.reset()
