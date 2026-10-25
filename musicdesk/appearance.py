@@ -58,7 +58,6 @@ def write_startup_report(app, window, path: Path):
         "icon_asset_exists": asset_path("riffuna.ico").is_file(),
         "application_icon": not app.windowIcon().isNull(), "window_icon": not window.windowIcon().isNull(),
         "icon_sizes": sorted(size.width() for size in window.windowIcon().availableSizes()),
-        "audio_output": "continuous-pcm" if hasattr(window.playback.seek_guard, "pcm") else "qt-native",
     }
     if sys.platform == "win32":
         app_id = ctypes.c_void_p()

@@ -2,24 +2,18 @@
 import time
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtMultimedia import QAudioBufferOutput, QMediaPlayer
-
-from .pcm_output import PcmOutput, pcm_format
+from PySide6.QtMultimedia import QAudioBufferOutput
 
 
 class SeekAudioGuard(QObject):
     audio_buffer_received = Signal(object)
-    error = Signal(str)
 
-    def __init__(self, player, output, parent=None, clock=time.monotonic, pcm_factory=PcmOutput):
+    def __init__(self, player, output, parent=None, clock=time.monotonic):
         super().__init__(parent)
         self.player = player
         self.output = output
         self.volume = output.volume()
         self.clock = clock
-        self.pcm = pcm_factory(output, self)
-        self.pcm.error.connect(self.error)
-        player.setAudioOutput(None)
         self.target = None
         self.fresh = False
         self.fresh_at = None
@@ -33,7 +27,6 @@ class SeekAudioGuard(QObject):
 
     def set_volume(self, value):
         self.volume = min(1.0, max(0.0, value))
-        self.pcm.set_volume(self.volume)
         if self.target is None:
             self.output.setVolume(self.volume)
 
@@ -46,12 +39,11 @@ class SeekAudioGuard(QObject):
         self.fresh_at = None
         self.ramp_started = None
         self.output.setVolume(0)
-        self.pcm.transition()
 
     def observe(self):
         """Reconnect after source teardown; queued old callbacks keep old tokens."""
         if self.buffers is None:
-            self.buffers = QAudioBufferOutput(pcm_format(), self)
+            self.buffers = QAudioBufferOutput(self)
             self.player.setAudioBufferOutput(self.buffers)
         else:
             self.buffers.audioBufferReceived.disconnect(self._buffer_slot)
@@ -65,14 +57,10 @@ class SeekAudioGuard(QObject):
         self.audio_buffer_received.emit(buffer)
         if generation is not None and generation != self.generation:
             return
-        if not buffer.isValid() or self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+        if self.target is None or not buffer.isValid():
             return
         position = buffer.startTime() / 1000
-        if self.target is None:
-            self.pcm.feed(bytes(buffer.constData()))
-        elif self.target - 100 <= position <= self.target + 3000:
-            if not self.pcm.feed(bytes(buffer.constData())):
-                return
+        if self.target - 100 <= position <= self.target + 3000:
             if not self.fresh:
                 self.fresh_at = self.clock()
             self.fresh = True
@@ -97,7 +85,3 @@ class SeekAudioGuard(QObject):
         """Cancel callbacks and keep silence; requested volume is independent."""
         self.begin()
         self.target = None
-
-    def close(self):
-        self.timer.stop()
-        self.pcm.close()

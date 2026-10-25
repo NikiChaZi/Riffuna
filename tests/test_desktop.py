@@ -300,9 +300,6 @@ def test_switching_next_previous_and_repeated_seeks_hold_silence_until_new_audio
         assert player.player.position() >= 800
         assert all(volume == 0 for _, volume in source_events)
         assert player.output.isMuted()
-        assert player.player.audioOutput() is None
-        assert player.seek_guard.pcm.start_count == 1
-        assert player.seek_guard.pcm.reader.requests > 0
         assert library.db.execute("SELECT COUNT(*) FROM plays").fetchone()[0] == 3
         player.seek(1200)
         player.set_volume(27)

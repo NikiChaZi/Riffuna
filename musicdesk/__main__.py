@@ -24,11 +24,10 @@ def main():
     data = data_directory()
     data.mkdir(parents=True, exist_ok=True)
     handler = RotatingFileHandler(data / "application.log", maxBytes=1_000_000, backupCount=2, encoding="utf-8")
-    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(level=logging.INFO, handlers=[handler], format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if "--diagnose" in sys.argv:
         from .diagnostics import run
         return run(app, data)
-    logging.info("Starting local Riffuna build; continuous PCM output; source=%s", __file__)
     lock = QLockFile(str(data / "instance.lock"))
     if not lock.tryLock(0):
         QMessageBox.information(None, APP_NAME, APP_NAME + " уже запущен. Найди окно на панели задач.")
