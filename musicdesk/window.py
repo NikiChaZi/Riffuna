@@ -7,7 +7,7 @@ from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QPushButton, QScrollArea,
-    QSlider, QStackedWidget, QVBoxLayout, QWidget,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .branding import APP_NAME
@@ -15,7 +15,7 @@ from .icons import icon
 from .models import Track, time_label
 from .playback import Playback
 from .storage import Library
-from .widgets import Artwork, Cover, ElidedLabel, QueueRow, SortComboBox, TrackRow, icon_button, label
+from .widgets import Artwork, Cover, ElidedLabel, PointerSlider, QueueRow, SortComboBox, TrackRow, icon_button, label
 from .workers import Task
 from .youtube import YouTubeSource
 
@@ -379,11 +379,11 @@ class MainWindow(QMainWindow):
         self.elapsed = label("0:00", "tiny")
         self.elapsed.setMinimumWidth(33)
         progress.addWidget(self.elapsed)
-        self.seek = QSlider(Qt.Orientation.Horizontal)
+        self.seek = PointerSlider(Qt.Orientation.Horizontal, formatter=lambda value: time_label(value // 1000))
         self.seek.setAccessibleName("Позиция воспроизведения")
         self.seek.setRange(0, 0)
         self.seek.setEnabled(False)
-        self.seek.sliderReleased.connect(lambda: self.playback.seek(self.seek.value()))
+        self.seek.committed.connect(self.playback.seek)
         self.seek.sliderMoved.connect(lambda value: self.elapsed.setText(time_label(value // 1000)))
         progress.addWidget(self.seek, 1)
         self.total = label("0:00", "tiny")
@@ -399,7 +399,7 @@ class MainWindow(QMainWindow):
         self.mute_button.setCheckable(True)
         self.mute_button.toggled.connect(self.playback.output.setMuted)
         volume.addWidget(self.mute_button)
-        self.volume = QSlider(Qt.Orientation.Horizontal)
+        self.volume = PointerSlider(Qt.Orientation.Horizontal, formatter=lambda value: f"{value}%")
         self.volume.setAccessibleName("Громкость")
         self.volume.setRange(0, 100)
         self.volume.setValue(round(self.playback.output.volume() * 100))

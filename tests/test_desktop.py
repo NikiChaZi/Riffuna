@@ -246,3 +246,24 @@ def test_repeat_one_reuses_source_manual_next_advances_and_modes_persist(app, tm
     finally:
         player.shutdown()
         library.close()
+
+
+def test_native_seek_waits_for_new_audio_then_restores_volume(app, tmp_path, audio_url):
+    library = Library(tmp_path / "library.sqlite3")
+    player = Playback(library, TestSource(audio_url))
+    player.output.setMuted(True)
+    try:
+        player.play(Track("aaaaaaaaaaa", "Native seek"))
+        wait_for(lambda: player.player.position() > 300)
+        player.seek(1800)
+        assert player.output.volume() == 0
+        wait_for(lambda: player.seek_guard.target is None)
+        assert player.seek_guard.fresh
+        assert abs(player.output.volume() - .65) < .001
+        assert player.output.isMuted()
+        assert player.player.position() >= 1800
+        assert len(library.history()) == 1
+    finally:
+        player.shutdown()
+        player.pool.waitForDone(2000)
+        library.close()

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
-from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QStyle, QStyleOptionSlider, QToolTip, QSizePolicy, QVBoxLayout, QWidget
 
 from .icons import icon
 from .models import Track, time_label
@@ -29,6 +29,100 @@ def icon_button(name: str, tooltip: str, size: int = 36, parent=None) -> QPushBu
     button.setAccessibleName(tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     return button
+
+
+class PointerSlider(QSlider):
+    """Absolute pointer input, hover preview and one commit per user gesture."""
+
+    committed = Signal(int)
+
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None, *, formatter=str):
+        super().__init__(orientation, parent)
+        self.formatter = formatter
+        self._pointer_down = False
+        self._drag_offset = 0
+        self.setMouseTracking(True)
+
+    def _geometry(self):
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                      QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                      QStyle.SubControl.SC_SliderHandle, self)
+        return option, groove, handle
+
+    def value_at(self, position, *, drag=False):
+        option, groove, handle = self._geometry()
+        horizontal = self.orientation() == Qt.Orientation.Horizontal
+        start = groove.x() if horizontal else groove.y()
+        length = handle.width() if horizontal else handle.height()
+        span = (groove.width() if horizontal else groove.height()) - length
+        coordinate = position.x() if horizontal else position.y()
+        offset = self._drag_offset if drag else 0
+        pixel = round(coordinate - offset - start - length / 2)
+        return QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
+                                             pixel, max(0, span), option.upsideDown)
+
+    def _preview(self, position, global_position):
+        text = self.formatter(self.value_at(position))
+        QToolTip.showText(global_position, text, self)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        _, _, handle = self._geometry()
+        point = event.position().toPoint()
+        horizontal = self.orientation() == Qt.Orientation.Horizontal
+        self._drag_offset = ((point.x() - handle.center().x()) if horizontal
+                             else (point.y() - handle.center().y())) if handle.contains(point) else 0
+        self._pointer_down = True
+        self.setSliderDown(True)
+        self.setSliderPosition(self.value_at(event.position(), drag=True))
+        self._preview(event.position(), event.globalPosition().toPoint())
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._pointer_down:
+            self.setSliderPosition(self.value_at(event.position(), drag=True))
+        self._preview(event.position(), event.globalPosition().toPoint())
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pointer_down:
+            self.setSliderPosition(self.value_at(event.position(), drag=True))
+            self._pointer_down = False
+            self.setSliderDown(False)
+            self.committed.emit(self.value())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        before = self.value()
+        super().keyPressEvent(event)
+        if self.value() != before:
+            self.committed.emit(self.value())
+
+    def wheelEvent(self, event):
+        before = self.value()
+        super().wheelEvent(event)
+        if self.value() != before:
+            self.committed.emit(self.value())
+
+    def event(self, event):
+        if event.type() == QEvent.Type.ToolTip:
+            self._preview(event.pos(), event.globalPos())
+            event.accept()
+            return True
+        return super().event(event)
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
 
 
 class SortComboBox(QComboBox):

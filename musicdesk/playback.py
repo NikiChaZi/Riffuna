@@ -10,6 +10,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from .audio_devices import AudioRouting
 from .models import PlayQueue, Track
 from .relay import MediaRelay
+from .seek_guard import SeekAudioGuard
 from .storage import Library
 from .stream_cache import StreamCache
 from .workers import Task
@@ -54,6 +55,7 @@ class Playback(QObject):
         except ValueError:
             volume = 0.65
         self.output.setVolume(min(1.0, max(0.0, volume)))
+        self.seek_guard = SeekAudioGuard(self.player, self.output, self)
         mode = library.get_setting("repeat_mode", "off")
         self.repeat_mode = mode if mode in ("off", "one", "all") else "off"
         self._token = ""
@@ -121,6 +123,7 @@ class Playback(QObject):
         self._history_logged = False
         self._opened_at = time.perf_counter()
         self.last_start_ms = None
+        self.seek_guard.reset()
         self.player.stop()
         self.player.setSource(QUrl())
         self.relay.clear()
@@ -252,6 +255,7 @@ class Playback(QObject):
         self._resolving = False
         self._want_play = False
         self._expected_url = ""
+        self.seek_guard.reset()
         self.player.stop()
         self.player.setSource(QUrl())
         self.relay.clear()
@@ -259,10 +263,10 @@ class Playback(QObject):
 
     def seek(self, milliseconds: int):
         if self._expected_url:
-            self.player.setPosition(max(0, milliseconds))
+            self.seek_guard.seek(max(0, milliseconds))
 
     def set_volume(self, value: int):
-        self.output.setVolume(min(1.0, max(0.0, value / 100)))
+        self.seek_guard.set_volume(value / 100)
 
     def _playback_state(self, state):
         if not self._expected_url:
@@ -304,6 +308,7 @@ class Playback(QObject):
             return
         self._expected_url = ""
         self._want_play = False
+        self.seek_guard.reset()
         if self.current:
             self.relay.invalidate_cached(self.current.video_id)
             stream = self.streams.peek(self.current.video_id)
