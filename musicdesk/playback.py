@@ -49,13 +49,13 @@ class Playback(QObject):
         self.output = QAudioOutput(self)
         self.routing = AudioRouting(self.output, library, self)
         self.relay = MediaRelay(cache_directory=library.path.parent / "audio-cache")
-        self.player.setAudioOutput(self.output)
         try:
             volume = float(library.get_setting("volume", "0.65"))
         except ValueError:
             volume = 0.65
         self.output.setVolume(min(1.0, max(0.0, volume)))
         self.seek_guard = SeekAudioGuard(self.player, self.output, self)
+        self.seek_guard.error.connect(self._audio_output_error)
         mode = library.get_setting("repeat_mode", "off")
         self.repeat_mode = mode if mode in ("off", "one", "all") else "off"
         self._token = ""
@@ -293,6 +293,7 @@ class Playback(QObject):
         self.seek_guard.set_volume(value / 100)
 
     def _playback_state(self, state):
+        self.seek_guard.pcm.set_paused(state != QMediaPlayer.PlaybackState.PlayingState)
         if not self._expected_url:
             return
         if state == QMediaPlayer.PlaybackState.PlayingState:
@@ -335,6 +336,13 @@ class Playback(QObject):
             if self._want_play:
                 self.state_changed.emit("loading")
 
+    def _audio_output_error(self, message):
+        log.error("Audio output failed: %s", message)
+        self._want_play = False
+        self.player.pause()
+        self.state_changed.emit("error")
+        self.error.emit(message)
+
     def _player_error(self, error, message):
         if error == QMediaPlayer.Error.NoError or not self._expected_url:
             return
@@ -363,4 +371,5 @@ class Playback(QObject):
         self.prefetch_pool.clear()
         self.prefetch_pool.waitForDone(100)
         self.relay.close()
+        self.seek_guard.close()
 
