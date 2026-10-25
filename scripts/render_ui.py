@@ -130,6 +130,18 @@ def main():
         capture("07-minimum-queue")
         window._hide_queue()
         capture("08-minimum-no-queue")
+        window.queue_toggle.setChecked(True)
+        window.queue_panel.show()
+        window.show_view("home")
+        capture("12-minimum-home")
+        window.show_view("likes")
+        capture("13-minimum-likes")
+        window.show_view("history")
+        capture("14-minimum-history")
+        window.search_results = []
+        window.show_view("search")
+        capture("15-minimum-empty")
+        window._hide_queue()
         window.resize(1280, 800)
         window.search_results = []
         window._search_loading = True
@@ -148,7 +160,7 @@ def main():
         window.playback.pool.waitForDone(2000)
         app.processEvents()
         library.close()
-    print(f"Rendered 11 offline fixture screens to {args.output}")
+    print(f"Rendered 15 offline fixture screens to {args.output}")
 
 
 if __name__ == "__main__":

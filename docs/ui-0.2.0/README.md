@@ -1,7 +1,7 @@
 # Riffuna 0.2.0 — visual review
 
 Visual work only, on `codex/ui-0.2.0`. This is part of the future 0.2.0, not a release.
-The first QA pass uses 0.1.2 (`9a5b514`). Integration with published 0.1.3 and its updated licensing/audio behavior is still required before final QA. New Riffuna changes are intended for source-available, noncommercial use; commercial use requires a separate agreement with NikiChaZi. Do not replace the newer license files with this branch's inherited 0.1.2 files.
+The visual commit is `2c23e61`; published main 0.1.3 (`8acbffe`) was integrated by ordinary merge `360587d` before final QA. License and audio files exactly match main 0.1.3. New Riffuna changes are source-available for noncommercial use; commercial use requires a separate agreement with NikiChaZi. The PolyForm Noncommercial terms, LICENSING.md and the preserved legacy MIT notice remain intact.
 
 ## Decisions
 
@@ -37,15 +37,20 @@ All images below were rendered with `scripts/render_ui.py`, entirely offline, us
 | Queue closed | [before](before/06-likes-no-queue.png) | [after](after/06-likes-no-queue.png) |
 | Minimum / queue open | — | [1000×650](after/07-minimum-queue.png) |
 | Minimum / queue closed | — | [1000×650](after/08-minimum-no-queue.png) |
+| Minimum / home | — | [1000×650](after/12-minimum-home.png) |
+| Minimum / likes | — | [1000×650](after/13-minimum-likes.png) |
+| Minimum / history | — | [1000×650](after/14-minimum-history.png) |
+| Minimum / empty | — | [1000×650](after/15-minimum-empty.png) |
 | Loading | — | [after](after/09-loading.png) |
 | Search error | — | [after](after/10-error.png) |
 | Empty likes | — | [after](after/11-empty-likes.png) |
 
 ## Verification
 
-- Full suite on 0.1.2 base: **235 passed, 6 skipped**. Network opt-in tests remain skipped.
+- Final full suite after merging main 0.1.3: **240 passed, 6 skipped**. Network opt-in tests remain skipped.
 - New tests cover ICO frames, actual Qt icon loading, Windows identity, minimum geometry, compact badges, home navigation, unclipped empty-state text and a current recording outside the queue.
 - Source and PyInstaller startup were checked on the native `windows` platform with isolated data directories and automatic exit. Both exited 0, reported all 15 icon sizes, `Riffuna.Desktop`, and nonzero `WM_GETICON` small/big handles. Evidence: [source](startup-source.json), [packaged](startup-packaged.json).
+- Final test EXE SHA256: `42f1ea6c747bd83d8511ac678c026192573be35211279fd5f3f108df74390066`. Packaged LICENSE, LICENSING.md, THIRD_PARTY_NOTICES.md and LICENSES/MIT-legacy.txt were byte-compared with the merged sources.
 - The EXE's `RT_GROUP_ICON` contains the same 15 resolutions. This checks runtime and executable resources, not merely the existence of an ICO file. Existing pinned shortcuts may retain Windows' older icon cache; this test does not modify user shortcuts or the Explorer cache.
 - No search, cache, audio transport, recommendation or dependency changes were made. Click-to-seek, hover time/percent previews, output selection, repeat-one/all and SeekAudioGuard are covered by the existing regression suite.
 
