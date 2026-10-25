@@ -7,7 +7,6 @@ import sys
 import time
 
 from PySide6.QtCore import QThreadPool, QTimer
-from PySide6.QtMultimedia import QAudioBufferOutput
 
 from .models import PlayQueue
 from .playback import Playback
@@ -19,11 +18,10 @@ from .youtube import YouTubeSource
 def run(app, data: Path) -> int:
     library = Library(data / "diagnostic.sqlite3")
     library.save_queue(PlayQueue())
+    library.save_current(None)
     source = YouTubeSource()
     player = Playback(library, source)
     player.output.setMuted(True)
-    decoded = QAudioBufferOutput(player)
-    player.player.setAudioBufferOutput(decoded)
     pool = QThreadPool()
     prepared = "--prepared" in sys.argv
     report = {"ok": False, "frozen": bool(getattr(sys, "frozen", False)),
@@ -117,7 +115,7 @@ def run(app, data: Path) -> int:
             phase = "finishing"
             QTimer.singleShot(100, finish)
 
-    decoded.audioBufferReceived.connect(audio)
+    player.seek_guard.audio_buffer_received.connect(audio)
     player.error.connect(finish)
     task = Task("diagnostic-search", lambda: source.search("Дора ЁК", limit=40))
     task.signals.finished.connect(found)

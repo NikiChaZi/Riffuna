@@ -6,6 +6,7 @@ import struct
 import threading
 import time
 import wave
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QUrl
@@ -230,6 +231,8 @@ def test_repeat_one_reuses_source_manual_next_advances_and_modes_persist(app, tm
         player._expected_url = audio_url
         player._media_status(QMediaPlayer.MediaStatus.EndOfMedia)
         assert player.current == a
+        player._want_play = True
+        player._media_status(QMediaPlayer.MediaStatus.LoadedMedia)
         assert positions == [0] and starts == [True]
         assert opened == [a]
         player.next()
@@ -263,6 +266,113 @@ def test_native_seek_waits_for_new_audio_then_restores_volume(app, tmp_path, aud
         assert player.output.isMuted()
         assert player.player.position() >= 1800
         assert len(library.history()) == 1
+    finally:
+        player.shutdown()
+        player.pool.waitForDone(2000)
+        library.close()
+
+
+def test_switching_next_previous_and_repeated_seeks_hold_silence_until_new_audio(app, tmp_path, audio_url, monkeypatch):
+    library = Library(tmp_path / "library.sqlite3")
+    player = Playback(library, TestSource(audio_url))
+    player.output.setMuted(True)
+    a, b = Track("aaaaaaaaaaa", "First"), Track("bbbbbbbbbbb", "Second")
+    source_events = []
+    original_set_source = player.player.setSource
+    def set_source(url):
+        source_events.append((url.isEmpty(), player.output.volume()))
+        original_set_source(url)
+    monkeypatch.setattr(player.player, "setSource", set_source)
+    try:
+        player.play_all([a, b])
+        wait_for(lambda: player.seek_guard.target is None)
+        player.next()
+        assert player.output.volume() == 0
+        wait_for(lambda: player.seek_guard.target is None)
+        assert player.current == b
+        player.previous()
+        assert player.output.volume() == 0
+        wait_for(lambda: player.seek_guard.target is None)
+        assert player.current == a
+        player.seek(2100)
+        player.seek(800)
+        wait_for(lambda: player.seek_guard.target is None)
+        assert player.player.position() >= 800
+        assert all(volume == 0 for _, volume in source_events)
+        assert player.output.isMuted()
+        assert library.db.execute("SELECT COUNT(*) FROM plays").fetchone()[0] == 3
+        player.seek(1200)
+        player.set_volume(27)
+    finally:
+        player.shutdown()
+        player.pool.waitForDone(2000)
+    assert abs(float(library.get_setting("volume", "0")) - .27) < .001
+    library.close()
+
+
+def test_paused_seek_stays_silent_and_resumes_at_requested_position(app, tmp_path, audio_url):
+    library = Library(tmp_path / "library.sqlite3")
+    player = Playback(library, TestSource(audio_url))
+    player.output.setMuted(True)
+    try:
+        player.play(Track("aaaaaaaaaaa", "Paused seek"))
+        wait_for(lambda: player.player.position() > 300 and player.seek_guard.target is None)
+        player.toggle()
+        player.seek(2200)
+        wait_for(lambda: player._pending_seek is None)
+        QTest.qWait(300)
+        assert not player._want_play
+        assert player.output.volume() == 0
+        player.toggle()
+        wait_for(lambda: player.seek_guard.target is None)
+        assert player.player.position() >= 2200
+        assert player.output.isMuted()
+    finally:
+        player.shutdown()
+        player.pool.waitForDone(2000)
+        library.close()
+
+
+def test_native_seek_reopens_relay_without_redownloading_audio(app, tmp_path, audio_url):
+    import re
+    from musicdesk.relay import MediaRelay
+    body = Path(QUrl(audio_url).toLocalFile()).read_bytes()
+    calls = []
+    class Response:
+        def __init__(self, headers):
+            match = re.fullmatch(r"bytes=(\d+)-(\d*)", headers.get("Range", ""))
+            self.start = int(match[1]) if match else 0
+            self.end = min(len(body) - 1, int(match[2]) if match and match[2] else len(body) - 1)
+            self.status_code = 206 if match else 200
+            self.headers = {"Content-Type": "audio/wav", "Content-Length": str(self.end - self.start + 1)}
+            if match:
+                self.headers["Content-Range"] = f"bytes {self.start}-{self.end}/{len(body)}"
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def iter_content(self, size): yield body[self.start:self.end + 1]
+    class Session:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url, **kwargs):
+            calls.append(kwargs["headers"].get("Range"))
+            return Response(kwargs["headers"])
+        head = get
+    class RemoteSource(TestSource):
+        def resolve(self, track): return AudioStream("https://fixture.googlevideo.com/audio")
+    library = Library(tmp_path / "library.sqlite3")
+    player = Playback(library, RemoteSource(audio_url))
+    player.relay.close()
+    player.relay = MediaRelay(Session)
+    player.output.setMuted(True)
+    try:
+        player.play(Track("aaaaaaaaaaa", "Buffered relay seek"))
+        wait_for(lambda: player.seek_guard.target is None)
+        count = len(calls)
+        assert count > 0
+        player.seek(1800)
+        wait_for(lambda: player.seek_guard.target is None)
+        assert player.player.position() >= 1800
+        assert len(calls) == count
     finally:
         player.shutdown()
         player.pool.waitForDone(2000)

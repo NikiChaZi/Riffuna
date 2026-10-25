@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer
-from PySide6.QtMultimedia import QAudioBufferOutput
 from PySide6.QtWidgets import QApplication
 
 from musicdesk.models import PlayQueue, Track
@@ -29,10 +28,9 @@ def main():
     app = QApplication([])
     library = Library(Path(".test-data/latency-benchmark/library.sqlite3"))
     library.save_queue(PlayQueue())
+    library.save_current(None)
     player = Playback(library, YouTubeSource())
     player.output.setMuted(True)
-    output = QAudioBufferOutput(player)
-    player.player.setAudioBufferOutput(output)
     track = Track(args.video, "Latency check")
     report = {"video_id": args.video, "prepared": args.prepared, "ok": False}
     phase = "preparing" if args.prepared else "starting"
@@ -96,7 +94,7 @@ def main():
             QTimer.singleShot(100, finish)
             phase = "finished"
 
-    output.audioBufferReceived.connect(audio)
+    player.seek_guard.audio_buffer_received.connect(audio)
     player.error.connect(finish)
     if args.prepared:
         player.prefetch(track)
