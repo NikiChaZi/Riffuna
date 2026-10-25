@@ -12,8 +12,8 @@ def data_directory() -> Path:
     override = os.environ.get("MUSICDESK_DATA_DIR")
     if override:
         return Path(override)
-    base = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
-    return base / DATA_FOLDER
+    # A profile folder is stable across Explorer and MSIX-hosted launchers.
+    return Path.home() / ".riffuna"
 
 
 class Library:
@@ -23,7 +23,8 @@ class Library:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
-        self.db.execute("PRAGMA journal_mode = WAL")
+        self.db.execute("PRAGMA journal_mode = DELETE")
+        self.db.execute("PRAGMA busy_timeout = 5000")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS tracks (
                 video_id TEXT PRIMARY KEY, title TEXT NOT NULL,
@@ -41,8 +42,124 @@ class Library:
                 position INTEGER PRIMARY KEY, video_id TEXT NOT NULL REFERENCES tracks(video_id)
             );
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            PRAGMA user_version = 1;
         """)
+        self._migrate_playlists()
+
+    def _migrate_playlists(self):
+        """Add playlist tables without rewriting the original library tables."""
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute("""
+                CREATE TABLE IF NOT EXISTS user_playlists (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 100)
+                )
+            """)
+            self.db.execute("""
+                CREATE TABLE IF NOT EXISTS playlist_items (
+                    playlist_id INTEGER NOT NULL REFERENCES user_playlists(id) ON DELETE CASCADE,
+                    video_id TEXT NOT NULL REFERENCES tracks(video_id),
+                    position INTEGER NOT NULL CHECK(position >= 0),
+                    PRIMARY KEY (playlist_id, video_id),
+                    UNIQUE (playlist_id, position)
+                )
+            """)
+            if version < 2:
+                self.db.execute("PRAGMA user_version = 2")
+
+    @staticmethod
+    def _playlist_name(name: str) -> str:
+        if not isinstance(name, str):
+            raise ValueError("Playlist name must be text")
+        name = name.strip()
+        if not 1 <= len(name) <= 100:
+            raise ValueError("Playlist name must contain 1 to 100 characters")
+        return name
+
+    def _require_playlist(self, playlist_id: int) -> None:
+        if not self.db.execute("SELECT 1 FROM user_playlists WHERE id=?", (playlist_id,)).fetchone():
+            raise ValueError("Unknown playlist")
+
+    def playlists(self) -> list[dict]:
+        """Return newest-created playlists first, including empty playlists."""
+        return [dict(row) for row in self.db.execute("""
+            SELECT p.id, p.name, COUNT(i.video_id) AS track_count,
+                   COALESCE((SELECT t.thumbnail FROM playlist_items first_item
+                             JOIN tracks t USING(video_id)
+                             WHERE first_item.playlist_id=p.id
+                             ORDER BY first_item.position LIMIT 1), '') AS thumbnail
+            FROM user_playlists p LEFT JOIN playlist_items i ON i.playlist_id=p.id
+            GROUP BY p.id, p.name ORDER BY p.id DESC
+        """)]
+
+    def create_playlist(self, name: str) -> int:
+        name = self._playlist_name(name)
+        with self.db:
+            cursor = self.db.execute("INSERT INTO user_playlists(name) VALUES (?)", (name,))
+        return int(cursor.lastrowid)
+
+    def rename_playlist(self, playlist_id: int, name: str) -> None:
+        name = self._playlist_name(name)
+        self._require_playlist(playlist_id)
+        with self.db:
+            self.db.execute("UPDATE user_playlists SET name=? WHERE id=?", (name, playlist_id))
+
+    def delete_playlist(self, playlist_id: int) -> None:
+        """Delete only playlist membership, retaining tracks, likes and history."""
+        self._require_playlist(playlist_id)
+        with self.db:
+            self.db.execute("DELETE FROM user_playlists WHERE id=?", (playlist_id,))
+
+    def playlist_tracks(self, playlist_id: int) -> list[Track]:
+        """Unknown playlist IDs raise ValueError for this and all mutations."""
+        self._require_playlist(playlist_id)
+        return [self._track(row) for row in self.db.execute("""
+            SELECT t.* FROM playlist_items i JOIN tracks t USING(video_id)
+            WHERE i.playlist_id=? ORDER BY i.position
+        """, (playlist_id,))]
+
+    def add_to_playlist(self, playlist_id: int, track: Track) -> None:
+        """Append a new video ID; duplicate additions preserve its position."""
+        self._require_playlist(playlist_id)
+        with self.db:
+            self._upsert(track)
+            self.db.execute("""
+                INSERT OR IGNORE INTO playlist_items(playlist_id, video_id, position)
+                SELECT ?, ?, COUNT(*) FROM playlist_items WHERE playlist_id=?
+            """, (playlist_id, track.video_id, playlist_id))
+
+    def _playlist_order(self, playlist_id: int) -> list[str]:
+        self._require_playlist(playlist_id)
+        return [row[0] for row in self.db.execute(
+            "SELECT video_id FROM playlist_items WHERE playlist_id=? ORDER BY position", (playlist_id,))]
+
+    def _replace_playlist_order(self, playlist_id: int, video_ids: list[str]) -> None:
+        # Reinsert within one transaction to avoid UNIQUE-position collisions.
+        with self.db:
+            self.db.execute("DELETE FROM playlist_items WHERE playlist_id=?", (playlist_id,))
+            self.db.executemany("INSERT INTO playlist_items(playlist_id, video_id, position) VALUES (?, ?, ?)",
+                                ((playlist_id, video_id, position) for position, video_id in enumerate(video_ids)))
+
+    def remove_from_playlist(self, playlist_id: int, video_id: str) -> None:
+        """An absent video ID is a no-op in an existing playlist."""
+        order = self._playlist_order(playlist_id)
+        if video_id in order:
+            order.remove(video_id)
+            self._replace_playlist_order(playlist_id, order)
+
+    def move_playlist_track(self, playlist_id: int, video_id: str, offset: int) -> None:
+        """Move by -1/+1; missing tracks and moves past an edge are no-ops."""
+        if offset not in (-1, 1):
+            raise ValueError("Playlist move offset must be -1 or +1")
+        order = self._playlist_order(playlist_id)
+        if video_id not in order:
+            return
+        index = order.index(video_id)
+        destination = index + offset
+        if 0 <= destination < len(order):
+            order[index], order[destination] = order[destination], order[index]
+            self._replace_playlist_order(playlist_id, order)
 
     def _upsert(self, track: Track):
         self.db.execute("""

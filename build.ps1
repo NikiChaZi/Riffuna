@@ -15,14 +15,9 @@ $env:PATH = @((Split-Path -Parent $Python), $pythonBase, (Join-Path $pythonBase 
 try {
     & $Python scripts\make_icon.py
     if ($LASTEXITCODE -ne 0) { throw 'Icon generation failed' }
-    & $Python -m PyInstaller --clean --noconfirm --distpath $DistPath --onedir --windowed --name Riffuna --icon assets\riffuna.ico --add-data "assets;assets" --add-binary "vendor\libmpv\libmpv-2.dll;vendor\libmpv" --recursive-copy-metadata yt-dlp --copy-metadata requests --copy-metadata urllib3 --copy-metadata certifi --copy-metadata charset-normalizer --copy-metadata idna --copy-metadata ytmusicapi --copy-metadata pyinstaller --copy-metadata PySide6 --copy-metadata PySide6_Essentials --copy-metadata PySide6_Addons --copy-metadata shiboken6 --collect-data ytmusicapi --collect-all yt_dlp_ejs launch.py
+    & $Python -m PyInstaller --clean --noconfirm --distpath $DistPath --onefile --windowed --name Riffuna --icon assets\riffuna.ico --add-data "assets;assets" --add-data "LICENSES;LICENSES" --add-data "$pythonBase\LICENSE.txt;LICENSES" --add-data "LICENSE;." --add-data "LICENSING.md;." --add-data "THIRD_PARTY_NOTICES.md;." --add-data "README.md;." --add-data "CHANGELOG.md;." --add-binary "vendor\libmpv\libmpv-2.dll;vendor\libmpv" --recursive-copy-metadata yt-dlp --copy-metadata requests --copy-metadata urllib3 --copy-metadata certifi --copy-metadata charset-normalizer --copy-metadata idna --copy-metadata ytmusicapi --copy-metadata pyinstaller --copy-metadata PySide6 --copy-metadata PySide6_Essentials --copy-metadata PySide6_Addons --copy-metadata shiboken6 --collect-data ytmusicapi --collect-all yt_dlp_ejs launch.py
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
-    $releaseFolder = Join-Path (Join-Path $PSScriptRoot $DistPath) 'Riffuna'
-    Copy-Item -LiteralPath 'LICENSE','LICENSING.md','README.md','CHANGELOG.md','THIRD_PARTY_NOTICES.md' -Destination $releaseFolder
-    Copy-Item -LiteralPath 'LICENSES' -Destination $releaseFolder -Recurse
-    $pythonLicense = Join-Path $pythonBase 'LICENSE.txt'
-    if (Test-Path -LiteralPath $pythonLicense) { Copy-Item -LiteralPath $pythonLicense -Destination (Join-Path $releaseFolder 'PYTHON-LICENSE.txt') }
-    Write-Output (Join-Path (Join-Path $PSScriptRoot $DistPath) 'Riffuna\Riffuna.exe')
+    Write-Output (Join-Path (Join-Path $PSScriptRoot $DistPath) 'Riffuna.exe')
 }
 finally {
     $env:PATH = $originalBuildPath

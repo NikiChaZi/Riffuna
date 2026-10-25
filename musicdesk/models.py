@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import random
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlparse
 
@@ -139,3 +140,85 @@ class PlayQueue:
         self.index = target
         return self.current
 
+
+
+class ShuffleOrder:
+    """Random traversal independent of the visible queue and its saved order."""
+
+    def __init__(self, rng=None):
+        self.rng = rng or random.Random()
+        self.ids = []
+        self.pending = []
+        self.seen = set()
+        self.history = []
+        self.cursor = -1
+
+    def reset(self, ids, current=None):
+        self.ids = list(dict.fromkeys(ids))
+        self.pending = self.ids.copy()
+        self.rng.shuffle(self.pending)
+        self.seen = set()
+        self.history = []
+        self.cursor = -1
+        if current is not None:
+            self.select(current)
+
+    def sync(self, ids):
+        ids = list(dict.fromkeys(ids))
+        available = set(ids)
+        self.pending = [item for item in self.pending if item in available]
+        self.seen.intersection_update(available)
+        for item in ids:
+            if item not in self.ids:
+                self.pending.insert(self.rng.randrange(len(self.pending) + 1), item)
+        self.ids = ids
+
+    def select(self, item):
+        # Manual selections also become part of the navigation history, while
+        # a track outside the queue is never implicitly added to it.
+        if self.cursor < 0 or self.history[self.cursor] != item:
+            del self.history[self.cursor + 1:]
+            self.history.append(item)
+            self.cursor = len(self.history) - 1
+        if item in self.ids:
+            self.seen.add(item)
+            self.pending = [entry for entry in self.pending if entry != item]
+
+    def _forward_index(self):
+        return next((index for index in range(self.cursor + 1, len(self.history))
+                     if self.history[index] in self.ids), None)
+
+    def peek(self, repeat=False):
+        forward = self._forward_index()
+        if forward is not None:
+            return self.history[forward]
+        if not self.pending and repeat and self.ids:
+            self.pending = self.ids.copy()
+            self.rng.shuffle(self.pending)
+            current = self.history[self.cursor] if self.cursor >= 0 else None
+            if len(self.pending) > 1 and self.pending[0] == current:
+                other = self.rng.randrange(1, len(self.pending))
+                self.pending[0], self.pending[other] = self.pending[other], self.pending[0]
+            self.seen.clear()
+        return self.pending[0] if self.pending else None
+
+    def next(self, repeat=False):
+        item = self.peek(repeat)
+        if item is None:
+            return None
+        forward = self._forward_index()
+        if forward is not None:
+            self.cursor = forward
+        else:
+            self.pending.pop(0)
+            self.seen.add(item)
+            self.history.append(item)
+            self.cursor = len(self.history) - 1
+        return item
+
+    def previous(self):
+        for index in range(self.cursor - 1, -1, -1):
+            if self.history[index] in self.ids:
+                self.cursor = index
+                return self.history[index]
+        return None

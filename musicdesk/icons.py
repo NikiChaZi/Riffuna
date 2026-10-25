@@ -5,6 +5,9 @@ from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 PATHS = {
+    "shuffle": '<path d="M3 6h3l12 12h3M17 14l4 4-4 4M3 18h3l4-4m4-4 4-4h3m-4-4 4 4-4 4"/>',
+    "playlist": '<path d="M4 5h16M4 10h16M4 15h8m5-1v7m-3-3h6"/>',
+    "more": '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
     "chevron_down": '<path d="m6 9 6 6 6-6"/>',
     "play": '<path d="m9 5 11 7-11 7Z" fill="currentColor" stroke="none"/>',
     "pause": '<path d="M8 5v14M16 5v14" stroke-width="4"/>',

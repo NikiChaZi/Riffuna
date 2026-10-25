@@ -6,7 +6,7 @@ from PySide6.QtCore import QSize, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMenu, QPushButton, QScrollArea,
+    QListWidget, QListWidgetItem, QMainWindow, QMenu, QPushButton, QScrollArea, QInputDialog, QMessageBox,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -14,6 +14,7 @@ from .appearance import app_icon
 from .branding import APP_NAME
 from .icons import icon
 from .models import Track, time_label
+from .library_views import HomePage, PlaylistPage
 from .playback import Playback
 from .storage import Library
 from .widgets import Artwork, Cover, ElidedLabel, PointerSlider, QueryCard, QueueRow, RecordArt, SortComboBox, TrackRow, icon_button, label, tile_pixmap
@@ -42,6 +43,7 @@ class MainWindow(QMainWindow):
         self.visible_tracks: list[Track] = []
         self.rows: list[TrackRow] = []
         self.liked = library.liked_ids()
+        self._playlist_id = None
         self.view = "home"
         self.last_query = ""
         self._shutting_down = False
@@ -53,6 +55,7 @@ class MainWindow(QMainWindow):
         self._connect()
         self._refresh_queue()
         self._refresh_likes()
+        self._shuffle_changed(self.playback.shuffle)
         self._on_track(self.playback.current)
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self._focus_search)
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self._focus_search)
@@ -92,7 +95,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(label("ОБЗОР", "eyebrow"))
         self.nav: dict[str, QPushButton] = {}
         for key, title, glyph in [("home", "Главная", "home"), ("search", "Поиск", "search"),
-                                   ("likes", "Мне нравится", "heart"), ("history", "История", "history")]:
+                                   ("likes", "Мне нравится", "heart"), ("playlists", "Плейлисты", "playlist"), ("history", "История", "history")]:
             if key == "likes":
                 layout.addSpacing(18)
                 layout.addWidget(label("БИБЛИОТЕКА", "eyebrow"))
@@ -154,6 +157,11 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.home = self._home()
         self.stack.addWidget(self.home)
+        self.playlist_page = PlaylistPage(self.artwork)
+        self.playlist_page.playlist_requested.connect(self._show_playlist)
+        self.playlist_page.create_requested.connect(self._create_playlist)
+        self.playlist_page.context_requested.connect(self._playlist_menu)
+        self.stack.addWidget(self.playlist_page)
         self.results_page = QWidget()
         results_layout = QVBoxLayout(self.results_page)
         results_layout.setContentsMargins(0, 0, 0, 0)
@@ -181,6 +189,10 @@ class MainWindow(QMainWindow):
         self.play_all.setObjectName("listenAll")
         self.play_all.clicked.connect(lambda: self.playback.play_all(self.visible_tracks))
         heading_row.addWidget(self.play_all)
+        self.playlist_actions = icon_button("more", "Действия с плейлистом", 36)
+        self.playlist_actions.clicked.connect(lambda: self._playlist_menu(self._playlist_id, self.playlist_actions.mapToGlobal(self.playlist_actions.rect().bottomLeft())))
+        self.playlist_actions.hide()
+        heading_row.addWidget(self.playlist_actions)
         results_layout.addWidget(self.section_header)
         self.search_controls = QWidget()
         search_controls_layout = QHBoxLayout(self.search_controls)
@@ -253,92 +265,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.stack, 1)
         return panel
 
-    def _home(self) -> QScrollArea:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        body = QWidget()
-        body.setObjectName("content")
-        scroll.setWidget(body)
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(18)
-        hero = QFrame()
-        hero.setObjectName("hero")
-        hero_layout = QHBoxLayout(hero)
-        hero_layout.setContentsMargins(24, 24, 20, 24)
-        hero_layout.setSpacing(18)
-        hero_text = QVBoxLayout()
-        hero_text.setSpacing(12)
-        hero_text.addWidget(label("ОРИГИНАЛЫ · РЕМИКСЫ · SLOWED", "eyebrow"))
-        hero_title = label("Любимая музыка.\nЛюбая её версия.", "heroTitle")
-        hero_title.setWordWrap(True)
-        hero_text.addWidget(hero_title)
-        description = label("Находи знакомые треки и новое звучание на YouTube.", "muted")
-        description.setWordWrap(True)
-        hero_text.addWidget(description)
-        hero_text.addSpacing(4)
-        start = QPushButton("Найти музыку")
-        start.setObjectName("primary")
-        start.setIcon(icon("search", "#151716"))
-        start.setFixedWidth(166)
-        start.clicked.connect(self._focus_search)
-        hero_text.addWidget(start, 0, Qt.AlignmentFlag.AlignLeft)
-        hero_layout.addLayout(hero_text, 1)
-        self.hero_art = RecordArt()
-        hero_layout.addWidget(self.hero_art)
-        layout.addWidget(hero)
-        section_heading = QHBoxLayout()
-        section_heading.addWidget(label("Отправная точка", "sectionTitle"), 1)
-        section_heading.addWidget(label("ПРИМЕРЫ ПОИСКА", "eyebrow"))
-        layout.addLayout(section_heading)
-        grid = QGridLayout()
-        grid.setSpacing(10)
-        queries = [
-            ("Дора", "Втюрилась · оригинал", "Дора Втюрилась", "coral"),
-            ("worry", "LONOWN · ultra slowed", "LONOWN riserayss worry ultra slowed", "teal"),
-            ("Paparazzi", "Alximo · dubstep / slowed", "Alximo Paparazzi Dubstep Slowed", "sand"),
-            ("lucy~", "Corbon Amodio · slowed", "Corbon Amodio lucy slowed reverb", "sage"),
-        ]
-        for index, (title, subtitle, query, tone) in enumerate(queries):
-            button = QueryCard(title, subtitle, tone)
-            button.clicked.connect(lambda checked=False, text=query: self.search_query(text))
-            grid.addWidget(button, index // 2, index % 2)
-        layout.addLayout(grid)
-        self.home_library = QWidget()
-        library_layout = QHBoxLayout(self.home_library)
-        library_layout.setContentsMargins(0, 0, 0, 0)
-        library_layout.setSpacing(10)
-        for key, title, glyph, tone in (("likes", "Мне нравится", "heart_fill", "coral"),
-                                        ("history", "История", "history", "sage")):
-            card = QPushButton()
-            card.setObjectName("libraryCard")
-            card.setMinimumHeight(80)
-            card.setAccessibleName("Открыть: " + title)
-            card.setCursor(Qt.CursorShape.PointingHandCursor)
-            card_layout = QHBoxLayout(card)
-            card_layout.setContentsMargins(14, 14, 14, 14)
-            card_layout.setSpacing(12)
-            mark = label("")
-            mark.setPixmap(tile_pixmap(glyph, 40, tone))
-            card_layout.addWidget(mark)
-            texts = QVBoxLayout()
-            texts.setSpacing(4)
-            texts.addWidget(label(title, "trackTitle"))
-            caption = label("", "cardSubtitle")
-            texts.addWidget(caption)
-            if key == "likes":
-                self.home_likes_caption = caption
-            else:
-                self.home_history_caption = caption
-            card_layout.addLayout(texts, 1)
-            for child in card.findChildren(QLabel):
-                child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            card.clicked.connect(lambda checked=False, view=key: self.show_view(view))
-            library_layout.addWidget(card, 1)
-        layout.addWidget(self.home_library)
-        layout.addStretch()
-        return scroll
+    def _home(self):
+        page = HomePage(self.artwork)
+        page.track_requested.connect(self.playback.play)
+        page.track_context_requested.connect(self._track_popup)
+        page.view_requested.connect(self.show_view)
+        page.playlist_requested.connect(self._show_playlist)
+        page.create_requested.connect(self._create_playlist)
+        return page
+
+    def _refresh_home(self):
+        self.home.refresh(self.library.history(6), self.library.liked_tracks()[:6],
+                          self.library.playlists(), self.playback.current, len(self.playback.queue.tracks))
 
     def _queue_panel(self) -> QFrame:
         self.queue_panel = QFrame()
@@ -374,12 +312,32 @@ class MainWindow(QMainWindow):
         now_row.addLayout(now_text, 1)
         now_layout.addLayout(now_row)
         layout.addWidget(self.queue_now)
+        self.queue_play = QPushButton("Слушать очередь")
+        self.queue_play.setObjectName("listenAll")
+        self.queue_play.setIcon(icon("play", "#151716"))
+        self.queue_play.setToolTip("Запустить добавленные треки с начала")
+        self.queue_play.clicked.connect(self.playback.play_queue)
+        layout.addWidget(self.queue_play)
+        queue_tools = QHBoxLayout()
+        queue_tools.setSpacing(8)
+        self.queue_shuffle = QPushButton("Вперемешку")
+        self.queue_shuffle.setCheckable(True)
+        self.queue_shuffle.setIcon(icon("shuffle"))
+        self.queue_shuffle.setToolTip("Случайный порядок воспроизведения")
+        self.queue_shuffle.clicked.connect(self.playback.toggle_shuffle)
+        queue_tools.addWidget(self.queue_shuffle, 1)
+        self.queue_save = icon_button("plus", "Сохранить очередь как плейлист", 36)
+        self.queue_save.clicked.connect(lambda: self._create_playlist(from_queue=True))
+        queue_tools.addWidget(self.queue_save)
+        layout.addLayout(queue_tools)
         layout.addWidget(label("СПИСОК ВОСПРОИЗВЕДЕНИЯ", "eyebrow"))
         self.queue_list = QListWidget()
         self.queue_list.setSpacing(3)
         self.queue_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.queue_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.queue_list.itemDoubleClicked.connect(lambda item: self.playback.play(item.data(Qt.ItemDataRole.UserRole)))
+        self.queue_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.queue_list.customContextMenuRequested.connect(self._queue_track_menu)
         layout.addWidget(self.queue_list, 1)
         self.queue_empty = label("Добавь треки кнопкой +\nрядом с результатом поиска", "muted")
         self.queue_empty.setWordWrap(True)
@@ -420,6 +378,11 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
         buttons.addStretch()
+        self.shuffle_button = icon_button("shuffle", "Воспроизведение по порядку", 36)
+        self.shuffle_button.setCheckable(True)
+        self.shuffle_button.clicked.connect(self.playback.toggle_shuffle)
+        self.playback.shuffle_changed.connect(self._shuffle_changed)
+        buttons.addWidget(self.shuffle_button)
         self.previous_button = icon_button("previous", "Предыдущий трек")
         self.previous_button.clicked.connect(self.playback.previous)
         buttons.addWidget(self.previous_button)
@@ -614,6 +577,7 @@ class MainWindow(QMainWindow):
 
     def _sync_search_controls(self):
         searching = self.view == "search"
+        self.playlist_actions.setVisible(self.view == "playlist")
         self.search_controls.setVisible(searching)
         self.search_footer.setVisible(searching and bool(self.search_results))
         self.show_more.setEnabled(not self._search_loading)
@@ -638,7 +602,11 @@ class MainWindow(QMainWindow):
         self._select_nav()
         self._sync_search_controls()
         if view == "home":
+            self._refresh_home()
             self.stack.setCurrentWidget(self.home)
+        elif view == "playlists":
+            self.playlist_page.refresh(self.library.playlists())
+            self.stack.setCurrentWidget(self.playlist_page)
         elif view == "likes":
             self._show_tracks(self.library.liked_tracks(), "Мне нравится", "Треки, которые хочется услышать снова")
         elif view == "history":
@@ -649,7 +617,7 @@ class MainWindow(QMainWindow):
 
     def _select_nav(self):
         for key, button in self.nav.items():
-            button.setChecked(key == self.view)
+            button.setChecked(key == ("playlists" if self.view == "playlist" else self.view))
 
     def _show_tracks(self, tracks: list[Track], title: str, subtitle: str, preserve_position: bool = False):
         scroll_position = self.track_list.verticalScrollBar().value() if preserve_position else 0
@@ -658,9 +626,9 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.results_page)
         self.page_title.set_full_text(title)
         self.page_subtitle.setText(subtitle)
-        section_glyph, section_tone = {"likes": ("heart_fill", "coral"), "history": ("history", "sage")}.get(self.view, ("search", "sand"))
+        section_glyph, section_tone = {"likes": ("heart_fill", "coral"), "history": ("history", "sage"), "playlist": ("playlist", "sand")}.get(self.view, ("search", "sand"))
         self.section_cover.setPixmap(tile_pixmap(section_glyph, 64, section_tone))
-        self.page_kind.setText("ТВОЯ БИБЛИОТЕКА" if self.view in {"likes", "history"} else "ПОИСК В YOUTUBE")
+        self.page_kind.setText("ТВОЯ БИБЛИОТЕКА" if self.view in {"likes", "history", "playlist"} else "ПОИСК В YOUTUBE")
         self.visible_tracks = list(tracks)
         self.rows.clear()
         self.track_list.clear()
@@ -669,6 +637,7 @@ class MainWindow(QMainWindow):
             states = {
                 "likes": ("Здесь будут твои любимые треки", "Нажми сердечко рядом с записью — она появится здесь", "heart"),
                 "history": ("Пока тихо", "История появится после первого воспроизведения", "history"),
+                "playlist": ("Собери свой плейлист", "В поиске нажми правой кнопкой на трек и выбери «В плейлист»", "playlist"),
             }
             self._empty_state(*states.get(self.view, ("Ничего не найдено" if self.last_query else "Что послушаем?",
                                                        "Попробуй другое название или вставь ссылку на YouTube", "search")))
@@ -680,7 +649,7 @@ class MainWindow(QMainWindow):
             item.setSizeHint(QSize(0, 72))
             row = TrackRow(track, self.artwork, track.video_id in self.liked)
             row.hovered.connect(self.playback.prefetch)
-            row.play_requested.connect(self.playback.play)
+            row.play_requested.connect(self._play_visible_track)
             row.like_requested.connect(self.toggle_like)
             row.add_requested.connect(self._enqueue)
             row.set_current(bool(self.playback.current and self.playback.current.video_id == track.video_id))
@@ -702,21 +671,141 @@ class MainWindow(QMainWindow):
         self.playback.add(track)
         self._notice("Добавлено в очередь: " + track.title)
 
+    def _play_visible_track(self, track):
+        if self.view == "playlist":
+            self.playback.play_from(self.visible_tracks, track)
+        else:
+            self.playback.play(track)
+
     def _double_click(self, item):
-        self.playback.play(item.data(Qt.ItemDataRole.UserRole))
+        self._play_visible_track(item.data(Qt.ItemDataRole.UserRole))
 
     def _track_menu(self, position):
         item = self.track_list.itemAt(position)
-        if item is None:
-            return
-        track = item.data(Qt.ItemDataRole.UserRole)
+        if item is not None:
+            menu = self._make_track_menu(item.data(Qt.ItemDataRole.UserRole),
+                                         self._playlist_id if self.view == "playlist" else None)
+            menu.exec(self.track_list.viewport().mapToGlobal(position))
+            menu.deleteLater()
+
+    def _queue_track_menu(self, position):
+        item = self.queue_list.itemAt(position)
+        if item is not None:
+            self._track_popup(item.data(Qt.ItemDataRole.UserRole), self.queue_list.viewport().mapToGlobal(position))
+
+    def _track_popup(self, track, position):
+        menu = self._make_track_menu(track)
+        menu.exec(position)
+        menu.deleteLater()
+
+    def _make_track_menu(self, track, playlist_context=None):
         menu = QMenu(self)
-        menu.addAction("Слушать", lambda: self.playback.play(track))
+        menu.addAction("Слушать", lambda: self.playback.play_from(self.library.playlist_tracks(playlist_context), track)
+                       if playlist_context is not None else self.playback.play(track))
         menu.addAction("В очередь", lambda: self._enqueue(track))
         menu.addAction("Убрать лайк" if track.video_id in self.liked else "Мне нравится", lambda: self.toggle_like(track))
+        playlists = menu.addMenu("В плейлист")
+        menu._playlists_menu = playlists
+        for collection in self.library.playlists():
+            playlists.addAction(collection["name"], lambda checked=False, key=collection["id"]: self._add_to_playlist(key, track))
+        playlists.addSeparator()
+        playlists.addAction("Новый плейлист…", lambda: self._create_playlist(track=track))
+        if playlist_context is not None:
+            menu.addSeparator()
+            records = self.library.playlist_tracks(playlist_context)
+            index = next((i for i, record in enumerate(records) if record.video_id == track.video_id), -1)
+            up = menu.addAction("Выше в плейлисте", lambda: self._move_playlist_track(playlist_context, track, -1))
+            up.setEnabled(index > 0)
+            down = menu.addAction("Ниже в плейлисте", lambda: self._move_playlist_track(playlist_context, track, 1))
+            down.setEnabled(0 <= index < len(records) - 1)
+            menu.addAction("Убрать из плейлиста", lambda: self._remove_from_playlist(playlist_context, track))
         menu.addSeparator()
         menu.addAction("Открыть на YouTube", lambda: QDesktopServices.openUrl(QUrl(track.url)))
-        menu.exec(self.track_list.viewport().mapToGlobal(position))
+        return menu
+
+    def _show_playlist(self, playlist_id, preserve_position=False):
+        collection = next((item for item in self.library.playlists() if item["id"] == playlist_id), None)
+        if collection is None:
+            return
+        self._playlist_id = playlist_id
+        self.view = "playlist"
+        self.notice.hide()
+        self._select_nav()
+        self._sync_search_controls()
+        self._show_tracks(self.library.playlist_tracks(playlist_id), collection["name"],
+                          f"Треков: {collection['track_count']}", preserve_position=preserve_position)
+
+    def _create_playlist(self, track=None, from_queue=False):
+        name, accepted = QInputDialog.getText(self, "Новый плейлист", "Название")
+        if not accepted:
+            return
+        try:
+            playlist_id = self.library.create_playlist(name)
+        except ValueError:
+            self._notice("Введи название от 1 до 100 символов.", error=True)
+            return
+        records = list(self.playback.queue.tracks) if from_queue else [track] if track is not None else []
+        for record in records:
+            self.library.add_to_playlist(playlist_id, record)
+        self._refresh_home()
+        self._show_playlist(playlist_id)
+
+    def _add_to_playlist(self, playlist_id, track):
+        self.library.add_to_playlist(playlist_id, track)
+        self._refresh_home()
+        if self.view == "playlist" and self._playlist_id == playlist_id:
+            self._show_playlist(playlist_id, preserve_position=True)
+        self._notice("Сохранено в плейлист: " + track.title)
+
+    def _remove_from_playlist(self, playlist_id, track):
+        self.library.remove_from_playlist(playlist_id, track.video_id)
+        self._refresh_home()
+        self._show_playlist(playlist_id, preserve_position=True)
+
+    def _move_playlist_track(self, playlist_id, track, offset):
+        self.library.move_playlist_track(playlist_id, track.video_id, offset)
+        self._show_playlist(playlist_id, preserve_position=True)
+
+    def _playlist_menu(self, playlist_id, position):
+        if playlist_id is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Слушать всё", lambda: self.playback.play_all(self.library.playlist_tracks(playlist_id)))
+        menu.addAction("Переименовать…", lambda: self._rename_playlist(playlist_id))
+        menu.addSeparator()
+        menu.addAction("Удалить плейлист…", lambda: self._delete_playlist(playlist_id))
+        menu.exec(position)
+
+    def _rename_playlist(self, playlist_id):
+        collection = next((item for item in self.library.playlists() if item["id"] == playlist_id), None)
+        if collection is None:
+            return
+        name, accepted = QInputDialog.getText(self, "Переименовать плейлист", "Название", text=collection["name"])
+        if not accepted:
+            return
+        try:
+            self.library.rename_playlist(playlist_id, name)
+        except ValueError:
+            self._notice("Введи название от 1 до 100 символов.", error=True)
+            return
+        self._refresh_home()
+        if self.view == "playlist":
+            self._show_playlist(playlist_id, preserve_position=True)
+        elif self.view == "playlists":
+            self.playlist_page.refresh(self.library.playlists())
+
+    def _delete_playlist(self, playlist_id):
+        collection = next((item for item in self.library.playlists() if item["id"] == playlist_id), None)
+        if collection is None:
+            return
+        if QMessageBox.question(self, "Удалить плейлист?", "Удалить «" + collection["name"] + "»? Треки и лайки сохранятся.",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self.library.delete_playlist(playlist_id)
+        self._playlist_id = None
+        self._refresh_home()
+        self.show_view("playlists")
 
     def toggle_like(self, track: Track):
         self.library.like(track, track.video_id not in self.liked)
@@ -731,8 +820,7 @@ class MainWindow(QMainWindow):
     def _refresh_likes(self):
         self.liked = self.library.liked_ids()
         self.likes_count.setText(f"Сохранено треков: {len(self.liked)}" if self.liked else "Пока без лайков")
-        self.home_likes_caption.setText(f"Сохранено: {len(self.liked)}" if self.liked else "Сохраняй сердечком")
-        self.home_history_caption.setText("Недавние прослушивания")
+        self._refresh_home()
         for row in self.rows:
             row.set_liked(row.track.video_id in self.liked)
         liked = self.playback.current is not None and self.playback.current.video_id in self.liked
@@ -745,6 +833,14 @@ class MainWindow(QMainWindow):
                                         "#FF875F" if mode != "off" else "#B2B8AF"))
         self.repeat_button.setToolTip(titles[mode] + ". Нажми, чтобы переключить режим")
         self.repeat_button.setAccessibleName(titles[mode])
+        self.next_button.setEnabled(self.playback.can_next)
+
+    def _shuffle_changed(self, enabled):
+        for button in (self.shuffle_button, self.queue_shuffle):
+            button.setChecked(enabled)
+            button.setIcon(icon("shuffle", "#FF875F" if enabled else "#B2B8AF"))
+            button.setToolTip("Перемешивание включено" if enabled else "Слушать в случайном порядке")
+        self._refresh_queue()
 
     def _refresh_queue(self):
         scroll_position = self.queue_list.verticalScrollBar().value()
@@ -753,6 +849,9 @@ class MainWindow(QMainWindow):
         self.queue_list.clear()
         queue = self.playback.queue
         self.queue_caption.setText(str(len(queue.tracks)))
+        self.queue_play.setEnabled(bool(queue.tracks))
+        self.queue_save.setEnabled(bool(queue.tracks))
+        self.queue_shuffle.setEnabled(bool(queue.tracks))
         self.queue_empty.setVisible(not queue.tracks)
         self.queue_list.setVisible(bool(queue.tracks))
         for index, track in enumerate(queue.tracks):
@@ -769,7 +868,8 @@ class MainWindow(QMainWindow):
         self.queue_list.verticalScrollBar().setValue(scroll_position)
         self.play_button.setEnabled(bool(queue.tracks) or self.playback.current is not None)
         self.previous_button.setEnabled(queue.index > 0 or self.playback.current is not None)
-        self.next_button.setEnabled(queue.index + 1 < len(queue.tracks))
+        self.next_button.setEnabled(self.playback.can_next)
+        self._refresh_home()
 
     def _on_track(self, track: Track | None):
         self.notice.hide()
@@ -811,6 +911,7 @@ class MainWindow(QMainWindow):
         self.total.setText(time_label(value // 1000))
 
     def _history_changed(self):
+        self._refresh_home()
         if self.view == "history":
             self._show_tracks(self.library.history(), "История", "Последние прослушанные записи",
                               preserve_position=True)
@@ -829,7 +930,6 @@ class MainWindow(QMainWindow):
             self.sidebar_panel.setFixedWidth(168 if compact else 192)
             self.queue_panel.setFixedWidth(244 if compact else 272)
             self.current_info.setFixedWidth(240 if compact else 280)
-            self.hero_art.setVisible(not compact)
 
     def closeEvent(self, event):
         self._shutting_down = True

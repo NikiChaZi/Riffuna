@@ -1,4 +1,5 @@
 """Visual-layout and identity regressions, with synthetic data and no audio."""
+from dataclasses import replace
 import json
 import struct
 import sys
@@ -62,7 +63,6 @@ def test_minimum_window_keeps_navigation_and_player_controls_inside(make_window,
     wait_for(lambda: settled(window))
     app.processEvents()
     assert window.size() == QSize(1000, 650)
-    assert not window.hero_art.isVisible()
     assert window.search_input.width() >= 200
     assert window.page_title.geometry().right() < window.play_all.geometry().left()
     assert window.play_all.parentWidget().rect().contains(window.play_all.geometry())
@@ -82,22 +82,30 @@ def test_version_badges_do_not_stretch_to_row_height(make_window):
     assert all(badge.parentWidget().rect().contains(badge.geometry()) for badge in badges)
 
 
-def test_home_cards_have_height_and_preserve_existing_navigation(make_window, app, monkeypatch):
+def test_home_uses_real_library_covers_and_navigation(make_window, app, monkeypatch):
     window, source = make_window(lambda query, limit, order: [])
+    assert not window.home.findChildren(QueryCard)
+    records = [replace(track, view_count=None) for track in tracks(3, "Saved recording")]
+    window.library.record_play(records[0])
+    window.library.like(records[1], True)
+    playlist_id = window.library.create_playlist("Ночная дорога")
+    window.library.add_to_playlist(playlist_id, records[2])
+    window.show_view("home")
     app.processEvents()
-    cards = window.home.findChildren(QueryCard)
-    assert len(cards) == 4
-    queries = []
-    monkeypatch.setattr(window, "search_query", queries.append)
+    cards = window.home.findChildren(QPushButton, "trackTile")
+    assert len(cards) == 2
+    clicked = []
+    monkeypatch.setattr(window.playback, "_open_current", lambda: clicked.append(window.playback.current))
     cards[0].click()
-    assert queries == ["Дора Втюрилась"]
-    library_cards = window.home.findChildren(QPushButton, "libraryCard")
-    assert len(library_cards) == 2
-    assert all(card.height() >= 80 for card in library_cards)
-    library_cards[0].click()
-    assert window.view == "likes"
-    library_cards[1].click()
-    assert window.view == "history"
+    assert clicked == [records[0]]
+    assert not window.playback.queue.tracks
+    window.show_view("home")
+    app.processEvents()
+    collections = [card for card in window.home.findChildren(QPushButton, "playlistTile") if card.isVisible()]
+    assert len(collections) == 1
+    collections[0].click()
+    assert window.view == "playlist"
+    assert window.visible_tracks == [records[2]]
 
 
 @pytest.mark.parametrize("kind", ["loading", "error", "likes"])

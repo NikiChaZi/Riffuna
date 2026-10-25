@@ -89,9 +89,14 @@ def main():
             library.like(track, True)
         library.save_queue(PlayQueue(records[1:5], -1))
         library.save_current(records[0])
+        for name, selected in (("Ночная дорога", records[:4]), ("Ремиксы и slowed", records[2:])):
+            collection = library.create_playlist(name)
+            for track in selected:
+                library.add_to_playlist(collection, track)
         window = MainWindow(library, OfflineSource())
         for i, track in enumerate(records):
             window.artwork.cache[track.thumbnail] = cover(i)
+            window.artwork.loaded.emit(track.thumbnail, window.artwork.cache[track.thumbnail])
         window._on_track(records[0])
         window._refresh_queue()
         window.resize(1280, 800)
@@ -106,6 +111,10 @@ def main():
                 raise RuntimeError("Could not render " + name)
 
         capture("01-home")
+        window.show_view("playlists")
+        capture("16-playlists")
+        window._show_playlist(library.playlists()[0]["id"])
+        capture("17-playlist-tracks")
         window.last_query = "вечерний плейлист"
         window.search_results = records
         window._search_limit = 40
@@ -160,7 +169,7 @@ def main():
         window.playback.pool.waitForDone(2000)
         app.processEvents()
         library.close()
-    print(f"Rendered 15 offline fixture screens to {args.output}")
+    print(f"Rendered 17 offline fixture screens to {args.output}")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from .audio_devices import AudioRouting
-from .models import PlayQueue, Track
+from .models import PlayQueue, ShuffleOrder, Track
 from .relay import MediaRelay
 from .seek_guard import SeekAudioGuard, NativeAudioGuard
 from .storage import Library
@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 
 class Playback(QObject):
+    shuffle_changed = Signal(bool)
     repeat_changed = Signal(str)
     queue_changed = Signal()
     track_changed = Signal(object)
@@ -37,6 +38,9 @@ class Playback(QObject):
         self.streams = StreamCache(source.resolve)
         self.queue = library.load_queue()
         self._current = library.load_current() or self.queue.current
+        self._shuffle = library.get_setting("shuffle", "off") == "on"
+        self._shuffle_order = ShuffleOrder()
+        self._reset_shuffle()
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.prefetch_pool = QThreadPool(self)
@@ -80,6 +84,56 @@ class Playback(QObject):
         return self._current
 
     @property
+    def shuffle(self) -> bool:
+        return self._shuffle
+
+    @property
+    def can_next(self) -> bool:
+        if self.shuffle:
+            self._sync_shuffle()
+            return self._shuffle_order.peek(self.repeat) is not None
+        return bool(self.queue.tracks) and (self.repeat or self.queue.index + 1 < len(self.queue.tracks))
+
+    def toggle_shuffle(self):
+        self._shuffle = not self._shuffle
+        if self._shuffle:
+            self._reset_shuffle()
+        self.library.set_setting("shuffle", "on" if self._shuffle else "off")
+        self.shuffle_changed.emit(self._shuffle)
+        self._prepare_next()
+
+    def _reset_shuffle(self, *, include_current=True):
+        current = self.current.video_id if include_current and self.current else None
+        self._shuffle_order.reset([track.video_id for track in self.queue.tracks], current)
+
+    def _sync_shuffle(self):
+        self._shuffle_order.sync([track.video_id for track in self.queue.tracks])
+
+    def _advance_queue(self, step=1):
+        if not self.shuffle:
+            return self.queue.advance(step, repeat=self.repeat)
+        self._sync_shuffle()
+        video_id = self._shuffle_order.previous() if step < 0 else self._shuffle_order.next(self.repeat)
+        if video_id is None:
+            return None
+        self.queue.index = next(index for index, track in enumerate(self.queue.tracks)
+                                if track.video_id == video_id)
+        return self.queue.current
+
+    def play_queue(self):
+        """Restart the existing queue without replacing or rearranging it."""
+        if not self.queue.tracks:
+            return
+        self._reset_shuffle(include_current=False)
+        if self.shuffle:
+            self._advance_queue()
+        else:
+            self.queue.index = 0
+        self._current = self.queue.current
+        self._save_queue()
+        self._open_current()
+
+    @property
     def repeat(self):
         return self.repeat_mode == "all"
 
@@ -88,9 +142,11 @@ class Playback(QObject):
         self.repeat_mode = modes[(modes.index(self.repeat_mode) + 1) % len(modes)]
         self.library.set_setting("repeat_mode", self.repeat_mode)
         self.repeat_changed.emit(self.repeat_mode)
+        self._prepare_next()
 
     def add(self, track: Track):
         self.queue.add(track)
+        self._sync_shuffle()
         self._save_queue()
 
     def play(self, track: Track):
@@ -98,6 +154,22 @@ class Playback(QObject):
         self._current = track
         self.queue.index = next((i for i, queued in enumerate(self.queue.tracks)
                                  if queued.video_id == track.video_id), -1)
+        if self.shuffle:
+            self._sync_shuffle()
+            self._shuffle_order.select(track.video_id)
+        self._save_queue()
+        self._open_current()
+
+    def play_from(self, tracks: list[Track], track: Track):
+        """Play a selected playlist entry and continue within that playlist."""
+        unique = list({entry.video_id: entry for entry in tracks}.values())
+        selected = next((index for index, entry in enumerate(unique)
+                         if entry.video_id == track.video_id), None)
+        if selected is None:
+            return
+        self.queue = PlayQueue(unique, selected)
+        self._current = self.queue.current
+        self._reset_shuffle()
         self._save_queue()
         self._open_current()
 
@@ -106,9 +178,7 @@ class Playback(QObject):
             return
         unique = {track.video_id: track for track in tracks}
         self.queue = PlayQueue(list(unique.values()), 0)
-        self._current = self.queue.current
-        self._save_queue()
-        self._open_current()
+        self.play_queue()
 
     def _save_queue(self):
         self.library.save_queue(self.queue)
@@ -186,6 +256,13 @@ class Playback(QObject):
             self._prepare_next()
 
     def _prepare_next(self):
+        if self.shuffle:
+            self._sync_shuffle()
+            video_id = self._shuffle_order.peek(self.repeat)
+            candidate = next((track for track in self.queue.tracks if track.video_id == video_id), None)
+            if candidate is not None:
+                self.prefetch(candidate)
+            return
         index = self.queue.index + 1
         if index < len(self.queue.tracks):
             self.prefetch(self.queue.tracks[index])
@@ -225,10 +302,9 @@ class Playback(QObject):
             self.state_changed.emit("loading" if self._want_play else "paused")
         elif not self._expected_url:
             if self.current is None and self.queue.tracks:
-                self.queue.index = 0
-                self._current = self.queue.current
-                self._save_queue()
-            self._open_current()
+                self.play_queue()
+            else:
+                self._open_current()
         elif self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self._want_play = False
             self.player.pause()
@@ -237,7 +313,7 @@ class Playback(QObject):
             self.player.play()
 
     def next(self):
-        if self.queue.advance(repeat=self.repeat):
+        if self._advance_queue():
             self._current = self.queue.current
             self._save_queue()
             self._open_current()
@@ -245,7 +321,7 @@ class Playback(QObject):
     def previous(self):
         if self.player.position() > 3000 and self._expected_url:
             self.seek(0)
-        elif self.queue.advance(-1, repeat=self.repeat):
+        elif self._advance_queue(-1):
             self._current = self.queue.current
             self._save_queue()
             self._open_current()
@@ -255,6 +331,7 @@ class Playback(QObject):
         if was_current:
             # Removing a queue entry does not stop the audio already playing.
             self.queue.index = -1
+        self._sync_shuffle()
         self._save_queue()
 
     def stop(self):
@@ -332,7 +409,7 @@ class Playback(QObject):
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             if self.repeat_mode == "one":
                 self.seek(0)
-            elif self.queue.advance(repeat=self.repeat):
+            elif self._advance_queue():
                 self._current = self.queue.current
                 self._save_queue()
                 self._open_current()

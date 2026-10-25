@@ -34,6 +34,7 @@ def main():
         return 0
     try:
         library = Library()
+        logging.info("Library path=%s; frozen=%s", library.path.resolve(), bool(getattr(sys, "frozen", False)))
         window = MainWindow(library)
         window.show()
         screen = app.primaryScreen().availableGeometry()

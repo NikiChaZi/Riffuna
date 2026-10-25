@@ -81,3 +81,12 @@ QMenu { background: #253225; border: 1px solid #546B49; padding: 5px; }
 QMenu::item { padding: 9px 20px; }
 QMenu::item:selected { background: #3E5135; }
 """
+
+STYLE += """
+QWidget#libraryPage { background: #111615; }
+QPushButton#trackTile, QPushButton#playlistTile { background: #202923; border: 1px solid #354136; border-radius: 10px; padding: 0; text-align: left; }
+QPushButton#trackTile:hover, QPushButton#playlistTile:hover { background: #2A362D; border-color: #BE9677; }
+QPushButton#trackTile:pressed, QPushButton#playlistTile:pressed { background: #364333; }
+QPushButton#trackTile:focus, QPushButton#playlistTile:focus { border-color: #FFAA8D; }
+QWidget#libraryEmpty { background: #1D2720; border: 1px solid #354437; border-radius: 10px; }
+"""
