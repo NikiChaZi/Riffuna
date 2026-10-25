@@ -466,3 +466,47 @@ def test_views_tooltip_explains_candidate_scope(make_window):
     assert window.search_order.toolTip() == tooltip
     window.search_order.setCurrentIndex(0)
     assert not window.search_order.toolTip()
+
+
+def test_playing_low_queue_entry_preserves_scroll_and_selection(make_window, app, monkeypatch):
+    window, _ = make_window(lambda query, limit, order: [])
+    monkeypatch.setattr(window.playback, "_open_current", lambda: None)
+    for track in tracks(35):
+        window.playback.add(track)
+    app.processEvents()
+    item = window.queue_list.item(29)
+    window.queue_list.setCurrentItem(item)
+    window.queue_list.scrollToItem(item)
+    app.processEvents()
+    position = window.queue_list.verticalScrollBar().value()
+    assert position > 0
+    row = window.queue_list.itemWidget(item)
+    row.play_requested.emit(item.data(Qt.ItemDataRole.UserRole))
+    app.processEvents()
+    assert window.queue_list.verticalScrollBar().value() == position
+    assert window.queue_list.currentItem().data(Qt.ItemDataRole.UserRole) == tracks(35)[29]
+    assert len(window.playback.queue.tracks) == 35
+
+
+def test_history_refresh_does_not_jump_to_top(make_window, app):
+    window, _ = make_window(lambda query, limit, order: [])
+    for track in tracks(35):
+        window.library.record_play(track)
+    window.show_view("history")
+    app.processEvents()
+    window.track_list.verticalScrollBar().setValue(900)
+    position = window.track_list.verticalScrollBar().value()
+    assert position > 0
+    window.library.record_play(tracks(35)[2])
+    window._history_changed()
+    app.processEvents()
+    assert window.track_list.verticalScrollBar().value() == position
+
+
+def test_repeat_button_cycles_off_one_all(make_window):
+    window, _ = make_window(lambda query, limit, order: [])
+    for mode, checked in (("one", True), ("all", True), ("off", False)):
+        window.repeat_button.click()
+        assert window.playback.repeat_mode == mode
+        assert window.repeat_button.isChecked() == checked
+        assert window.repeat_button.accessibleName()

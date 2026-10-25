@@ -1,6 +1,7 @@
 """Bounded in-memory signed-stream cache with concurrent request coalescing."""
 from collections import OrderedDict
 from concurrent.futures import Future
+from dataclasses import replace
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
@@ -48,7 +49,7 @@ class StreamCache:
         if not owner:
             return future.result(timeout=60)
         try:
-            stream = self.resolver(track)
+            stream = replace(self.resolver(track), cache_key=track.video_id)
             now = self.clock()
             expires = now + 300
             try:

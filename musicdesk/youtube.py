@@ -47,6 +47,7 @@ class ExtractorLogger:
 class AudioStream:
     url: str
     headers: dict[str, str] = field(default_factory=dict)
+    cache_key: str = ""
 
 
 def _view_count(value: object) -> int | None:

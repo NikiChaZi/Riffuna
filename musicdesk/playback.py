@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 
 class Playback(QObject):
+    repeat_changed = Signal(str)
     queue_changed = Signal()
     track_changed = Signal(object)
     state_changed = Signal(str)
@@ -33,6 +34,7 @@ class Playback(QObject):
         self.source = source
         self.streams = StreamCache(source.resolve)
         self.queue = library.load_queue()
+        self._current = library.load_current() or self.queue.current
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.prefetch_pool = QThreadPool(self)
@@ -45,14 +47,15 @@ class Playback(QObject):
         self.player = QMediaPlayer(self)
         self.output = QAudioOutput(self)
         self.routing = AudioRouting(self.output, library, self)
-        self.relay = MediaRelay()
+        self.relay = MediaRelay(cache_directory=library.path.parent / "audio-cache")
         self.player.setAudioOutput(self.output)
         try:
             volume = float(library.get_setting("volume", "0.65"))
         except ValueError:
             volume = 0.65
         self.output.setVolume(min(1.0, max(0.0, volume)))
-        self.repeat = False
+        mode = library.get_setting("repeat_mode", "off")
+        self.repeat_mode = mode if mode in ("off", "one", "all") else "off"
         self._token = ""
         self._expected_url = ""
         self._resolving = False
@@ -68,14 +71,27 @@ class Playback(QObject):
 
     @property
     def current(self) -> Track | None:
-        return self.queue.current
+        return self._current
+
+    @property
+    def repeat(self):
+        return self.repeat_mode == "all"
+
+    def cycle_repeat(self):
+        modes = ("off", "one", "all")
+        self.repeat_mode = modes[(modes.index(self.repeat_mode) + 1) % len(modes)]
+        self.library.set_setting("repeat_mode", self.repeat_mode)
+        self.repeat_changed.emit(self.repeat_mode)
 
     def add(self, track: Track):
         self.queue.add(track)
         self._save_queue()
 
     def play(self, track: Track):
-        self.queue.select(track)
+        # A direct selection is not an implicit request to enqueue it.
+        self._current = track
+        self.queue.index = next((i for i, queued in enumerate(self.queue.tracks)
+                                 if queued.video_id == track.video_id), -1)
         self._save_queue()
         self._open_current()
 
@@ -84,11 +100,13 @@ class Playback(QObject):
             return
         unique = {track.video_id: track for track in tracks}
         self.queue = PlayQueue(list(unique.values()), 0)
+        self._current = self.queue.current
         self._save_queue()
         self._open_current()
 
     def _save_queue(self):
         self.library.save_queue(self.queue)
+        self.library.save_current(self.current)
         self.queue_changed.emit()
 
     def _open_current(self):
@@ -108,7 +126,7 @@ class Playback(QObject):
         self.relay.clear()
         self.track_changed.emit(track)
         self.state_changed.emit("loading")
-        cached = self.streams.peek(track.video_id)
+        cached = self.relay.cached(track.video_id) or self.streams.peek(track.video_id)
         if cached is not None:
             self._resolved(token, cached)
             return
@@ -122,7 +140,7 @@ class Playback(QObject):
         """Prepare a likely selection and bounded audio read-ahead; never plays it."""
         if self._closing:
             return
-        cached = self.streams.peek(track.video_id)
+        cached = self.relay.cached(track.video_id) or self.streams.peek(track.video_id)
         if cached is not None:
             self.relay.prepare(cached)
             return
@@ -198,6 +216,7 @@ class Playback(QObject):
         elif not self._expected_url:
             if self.current is None and self.queue.tracks:
                 self.queue.index = 0
+                self._current = self.queue.current
                 self._save_queue()
             self._open_current()
         elif self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -209,6 +228,7 @@ class Playback(QObject):
 
     def next(self):
         if self.queue.advance(repeat=self.repeat):
+            self._current = self.queue.current
             self._save_queue()
             self._open_current()
 
@@ -216,15 +236,16 @@ class Playback(QObject):
         if self.player.position() > 3000 and self._expected_url:
             self.player.setPosition(0)
         elif self.queue.advance(-1, repeat=self.repeat):
+            self._current = self.queue.current
             self._save_queue()
             self._open_current()
 
     def remove(self, index: int):
         was_current = self.queue.remove(index)
-        self._save_queue()
         if was_current:
-            self.stop()
-            self.track_changed.emit(self.current)
+            # Removing a queue entry does not stop the audio already playing.
+            self.queue.index = -1
+        self._save_queue()
 
     def stop(self):
         self._token = uuid.uuid4().hex  # Invalidate any late network result.
@@ -264,7 +285,11 @@ class Playback(QObject):
         if not self._expected_url:
             return
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            if self.queue.advance(repeat=self.repeat):
+            if self.repeat_mode == "one":
+                self.player.setPosition(0)
+                self.player.play()
+            elif self.queue.advance(repeat=self.repeat):
+                self._current = self.queue.current
                 self._save_queue()
                 self._open_current()
         elif status == QMediaPlayer.MediaStatus.BufferedMedia:
@@ -280,6 +305,7 @@ class Playback(QObject):
         self._expected_url = ""
         self._want_play = False
         if self.current:
+            self.relay.invalidate_cached(self.current.video_id)
             stream = self.streams.peek(self.current.video_id)
             if stream is not None:
                 self.relay.invalidate(stream)
@@ -292,6 +318,7 @@ class Playback(QObject):
         self._prefetch_next = None
         self.stop()
         self.library.save_queue(self.queue)
+        self.library.save_current(self.current)
         self.library.set_setting("volume", str(self.output.volume()))
         self.pool.clear()
         self.pool.waitForDone(100)

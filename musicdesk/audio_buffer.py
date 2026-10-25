@@ -93,8 +93,9 @@ class AudioBuffer:
 
 class AudioBuffers:
     def __init__(self, session_factory=TimedSession, *, max_entries=3,
-                 max_bytes=24 * 1024 * 1024, ttl=300, clock=time.time):
+                 max_bytes=24 * 1024 * 1024, ttl=300, clock=time.time, disk_cache=None):
         self.session_factory = session_factory
+        self.disk_cache = disk_cache
         self.max_entries = max_entries
         self.max_bytes = max_bytes
         self.ttl = ttl
@@ -219,6 +220,10 @@ class AudioBuffers:
             if not entry.cancelled.is_set():
                 log.info("Audio read-ahead unavailable (%s); falling back to streaming", type(exc).__name__)
         finally:
+            if (self.disk_cache is not None and not entry.failed and not entry.cancelled.is_set()
+                    and entry.total is not None and entry.buffered_bytes == entry.total
+                    and len(entry.data) == entry.total):
+                self.disk_cache.put(entry.stream.cache_key, entry.data, entry.content_type)
             with entry.condition:
                 entry.finished = True
                 entry.condition.notify_all()

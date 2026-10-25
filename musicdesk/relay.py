@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .audio_buffer import AudioBuffers
+from .disk_cache import DiskAudioCache
 from .youtube import AudioStream, TimedSession
 
 log = logging.getLogger(__name__)
@@ -35,18 +36,28 @@ def byte_range(value, total):
 
 
 class MediaRelay:
-    def __init__(self, session_factory=TimedSession):
+    def __init__(self, session_factory=TimedSession, *, cache_directory=None):
         self.session_factory = session_factory
-        self.buffers = AudioBuffers(session_factory)
+        self.disk_cache = DiskAudioCache(cache_directory) if cache_directory is not None else None
+        self.buffers = AudioBuffers(session_factory, disk_cache=self.disk_cache)
         self._binding = None
         self._server = None
         self._thread = None
 
+    def cached(self, video_id):
+        path = self.disk_cache.get(video_id) if self.disk_cache else None
+        return AudioStream(path.as_uri(), cache_key=video_id) if path is not None else None
+
     def prepare(self, stream):
         self.buffers.prepare(stream)
 
+    def invalidate_cached(self, video_id):
+        if self.disk_cache:
+            self.disk_cache.invalidate(video_id)
+
     def invalidate(self, stream):
         self.buffers.invalidate(stream)
+        self.invalidate_cached(stream.cache_key)
 
     def bind(self, stream: AudioStream) -> str:
         self.clear()

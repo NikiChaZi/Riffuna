@@ -366,9 +366,11 @@ class MainWindow(QMainWindow):
         self.next_button = icon_button("next", "Следующий трек")
         self.next_button.clicked.connect(self.playback.next)
         buttons.addWidget(self.next_button)
-        self.repeat_button = icon_button("repeat", "Повторять очередь", 32)
+        self.repeat_button = icon_button("repeat", "Повтор выключен", 36)
         self.repeat_button.setCheckable(True)
-        self.repeat_button.toggled.connect(lambda value: setattr(self.playback, "repeat", value))
+        self.repeat_button.clicked.connect(self.playback.cycle_repeat)
+        self.playback.repeat_changed.connect(self._repeat_changed)
+        self._repeat_changed(self.playback.repeat_mode)
         buttons.addWidget(self.repeat_button)
         buttons.addStretch()
         controls.addLayout(buttons)
@@ -662,7 +664,18 @@ class MainWindow(QMainWindow):
         liked = self.playback.current is not None and self.playback.current.video_id in self.liked
         self.current_like.setIcon(icon("heart_fill" if liked else "heart", "#FF875F" if liked else "#B2B8AF"))
 
+    def _repeat_changed(self, mode):
+        titles = {"off": "Повтор выключен", "one": "Повтор одного трека", "all": "Повтор всей очереди"}
+        self.repeat_button.setChecked(mode != "off")
+        self.repeat_button.setIcon(icon("repeat_one" if mode == "one" else "repeat",
+                                        "#FF875F" if mode != "off" else "#B2B8AF"))
+        self.repeat_button.setToolTip(titles[mode] + ". Нажми, чтобы переключить режим")
+        self.repeat_button.setAccessibleName(titles[mode])
+
     def _refresh_queue(self):
+        scroll_position = self.queue_list.verticalScrollBar().value()
+        selected = self.queue_list.currentItem()
+        selected_id = selected.data(Qt.ItemDataRole.UserRole).video_id if selected else None
         self.queue_list.clear()
         queue = self.playback.queue
         self.queue_caption.setText(f"Треков: {len(queue.tracks)}" if queue.tracks else "Пока пусто")
@@ -676,7 +689,11 @@ class MainWindow(QMainWindow):
             row.play_requested.connect(self.playback.play)
             row.remove_requested.connect(self.playback.remove)
             self.queue_list.setItemWidget(item, row)
-        self.play_button.setEnabled(bool(queue.tracks))
+            if track.video_id == selected_id:
+                self.queue_list.setCurrentItem(item)
+        self.queue_list.doItemsLayout()
+        self.queue_list.verticalScrollBar().setValue(scroll_position)
+        self.play_button.setEnabled(bool(queue.tracks) or self.playback.current is not None)
         self.previous_button.setEnabled(queue.index > 0 or self.playback.current is not None)
         self.next_button.setEnabled(queue.index + 1 < len(queue.tracks))
 
@@ -715,7 +732,8 @@ class MainWindow(QMainWindow):
 
     def _history_changed(self):
         if self.view == "history":
-            self.show_view("history")
+            self._show_tracks(self.library.history(), "История", "Последние прослушанные записи",
+                              preserve_position=True)
 
     def _notice(self, text: str, error: bool = False):
         self.notice.setText(text)

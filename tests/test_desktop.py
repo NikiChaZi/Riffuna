@@ -77,7 +77,7 @@ def test_search_library_and_native_audio(app, tmp_path, audio_url):
         wait_for(lambda: window.playback.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
         wait_for(lambda: bool(library.history()))
         assert library.history() == [track]
-        assert window.queue_list.count() == 1
+        assert window.queue_list.count() == 0
         window.playback.toggle()
         wait_for(lambda: window.playback.player.playbackState() == QMediaPlayer.PlaybackState.PausedState)
         window.grab().save(str(tmp_path / "desktop.png"))
@@ -88,7 +88,8 @@ def test_search_library_and_native_audio(app, tmp_path, audio_url):
         library.close()
     restored = Library(tmp_path / "library.sqlite3")
     assert restored.liked_tracks() == [track]
-    assert restored.load_queue().current == track
+    assert not restored.load_queue().tracks
+    assert restored.load_current() == track
     restored.close()
 
 
@@ -187,4 +188,61 @@ def test_restored_queue_is_prepared_without_autoplay(app, tmp_path, audio_url):
     finally:
         player.shutdown()
         player.prefetch_pool.waitForDone(2000)
+        library.close()
+
+
+def test_direct_play_does_not_enqueue_and_preserves_explicit_queue(app, tmp_path, audio_url, monkeypatch):
+    library = Library(tmp_path / "library.sqlite3")
+    player = Playback(library, TestSource(audio_url))
+    monkeypatch.setattr(player, "_open_current", lambda: None)
+    a, b, c = [Track(f"{i:011d}", str(i)) for i in range(3)]
+    try:
+        player.add(b)
+        player.play(a)
+        player.play(c)
+        assert player.queue.tracks == [b]
+        assert player.queue.index == -1
+        assert player.current == c
+        player.next()
+        assert player.current == b
+        player.remove(0)
+        assert player.current == b
+        assert not player.queue.tracks
+        assert library.load_current() == b
+    finally:
+        player.shutdown()
+        library.close()
+
+
+def test_repeat_one_reuses_source_manual_next_advances_and_modes_persist(app, tmp_path, audio_url, monkeypatch):
+    library = Library(tmp_path / "library.sqlite3")
+    player = Playback(library, TestSource(audio_url))
+    opened, positions, starts = [], [], []
+    monkeypatch.setattr(player, "_open_current", lambda: opened.append(player.current))
+    monkeypatch.setattr(player.player, "setPosition", positions.append)
+    monkeypatch.setattr(player.player, "play", lambda: starts.append(True))
+    a, b = Track("aaaaaaaaaaa", "A"), Track("bbbbbbbbbbb", "B")
+    try:
+        player.play_all([a, b])
+        player.cycle_repeat()
+        assert player.repeat_mode == "one"
+        assert library.get_setting("repeat_mode", "") == "one"
+        player._expected_url = audio_url
+        player._media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+        assert player.current == a
+        assert positions == [0] and starts == [True]
+        assert opened == [a]
+        player.next()
+        assert player.current == b
+        player.cycle_repeat()
+        assert player.repeat_mode == "all"
+        player.next()
+        assert player.current == a
+        player.cycle_repeat()
+        assert player.repeat_mode == "off"
+        player.play(b)
+        player._media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+        assert player.current == b
+    finally:
+        player.shutdown()
         library.close()

@@ -104,6 +104,18 @@ class Library:
             index = -1
         return PlayQueue(tracks, index)
 
+    def save_current(self, track: Track | None) -> None:
+        with self.db:
+            if track:
+                self._upsert(track)
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES ('current_track', ?)",
+                            (track.video_id if track else "",))
+
+    def load_current(self) -> Track | None:
+        video_id = self.get_setting("current_track", "")
+        row = self.db.execute("SELECT * FROM tracks WHERE video_id=?", (video_id,)).fetchone()
+        return self._track(row) if row else None
+
     def get_setting(self, key: str, default: str) -> str:
         row = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return row[0] if row else default
