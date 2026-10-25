@@ -55,6 +55,7 @@ def write_startup_report(app, window, path: Path):
     """Opt-in local UI smoke evidence; never includes library or track data."""
     report = {
         "frozen": bool(getattr(sys, "frozen", False)), "platform": app.platformName(),
+        "audio_backend": getattr(window.playback.player, "backend", "qt"),
         "icon_asset_exists": asset_path("riffuna.ico").is_file(),
         "application_icon": not app.windowIcon().isNull(), "window_icon": not window.windowIcon().isNull(),
         "icon_sizes": sorted(size.width() for size in window.windowIcon().availableSizes()),

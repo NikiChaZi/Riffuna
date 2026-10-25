@@ -80,21 +80,31 @@ def main():
         player.seek(target)
 
     def audio(buffer):
+        if buffer.isValid():
+            audio_position(buffer.startTime() // 1000)
+
+    def audio_position(position):
         nonlocal phase
-        if not buffer.isValid():
+        if finished:
             return
         if phase == "starting":
-            report["first_decoded_audio_ms"] = round((time.perf_counter() - clicked) * 1000)
+            report["first_playback_restart_ms" if native else "first_decoded_audio_ms"] = round((time.perf_counter() - clicked) * 1000)
             report["playing_state_ms"] = player.last_start_ms
             phase = "playing"
             QTimer.singleShot(1200, seek)
-        elif phase == "seeking" and (target - 100) * 1000 <= buffer.startTime() <= (target + 1500) * 1000:
+        elif phase == "seeking" and target - 100 <= position <= target + 1500:
             report["seek_audio_ms"] = round((time.perf_counter() - seek_started) * 1000)
-            report["seek_audio_position_ms"] = buffer.startTime() // 1000
+            report["seek_audio_position_ms"] = position
             QTimer.singleShot(100, finish)
             phase = "finished"
 
-    player.seek_guard.audio_buffer_received.connect(audio)
+    native = getattr(player.player, "backend", "qt") == "mpv"
+    report["audio_backend"] = "mpv" if native else "qt"
+    report["audio_signal"] = "native-playback-restart" if native else "decoded-buffer"
+    if native:
+        player.player.audioReady.connect(audio_position)
+    else:
+        player.seek_guard.audio_buffer_received.connect(audio)
     player.error.connect(finish)
     if args.prepared:
         player.prefetch(track)

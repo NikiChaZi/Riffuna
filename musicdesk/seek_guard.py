@@ -85,3 +85,28 @@ class SeekAudioGuard(QObject):
         """Cancel callbacks and keep silence; requested volume is independent."""
         self.begin()
         self.target = None
+
+
+class NativeAudioGuard(QObject):
+    """Volume controls only; libmpv owns the continuous native audio stream."""
+    audio_buffer_received = Signal(object)
+    target = None
+    fresh = True
+
+    def __init__(self, player, output, parent=None):
+        super().__init__(parent)
+        self.output = output
+        self.volume = output.volume()
+
+    def set_volume(self, value):
+        self.volume = min(1.0, max(0.0, value))
+        self.output.setVolume(self.volume)
+
+    def begin(self, milliseconds=0):
+        pass
+
+    def observe(self):
+        pass
+
+    def reset(self):
+        pass

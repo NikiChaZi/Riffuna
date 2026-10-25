@@ -18,3 +18,5 @@ dist-next/
 *.sqlite3-shm
 *.pem
 *.key
+
+vendor/libmpv/

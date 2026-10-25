@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 import logging
 import time
@@ -10,7 +11,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from .audio_devices import AudioRouting
 from .models import PlayQueue, Track
 from .relay import MediaRelay
-from .seek_guard import SeekAudioGuard
+from .seek_guard import SeekAudioGuard, NativeAudioGuard
 from .storage import Library
 from .stream_cache import StreamCache
 from .workers import Task
@@ -45,7 +46,9 @@ class Playback(QObject):
         self._closing = False
         self._opened_at = 0.0
         self.last_start_ms = None
-        self.player = QMediaPlayer(self)
+        from .mpv_player import MpvPlayer, library_path
+        native = os.environ.get("RIFFUNA_AUDIO_BACKEND", "mpv") != "qt" and library_path().is_file()
+        self.player = MpvPlayer(self) if native else QMediaPlayer(self)
         self.output = QAudioOutput(self)
         self.routing = AudioRouting(self.output, library, self)
         self.relay = MediaRelay(cache_directory=library.path.parent / "audio-cache")
@@ -55,7 +58,7 @@ class Playback(QObject):
         except ValueError:
             volume = 0.65
         self.output.setVolume(min(1.0, max(0.0, volume)))
-        self.seek_guard = SeekAudioGuard(self.player, self.output, self)
+        self.seek_guard = (NativeAudioGuard if native else SeekAudioGuard)(self.player, self.output, self)
         mode = library.get_setting("repeat_mode", "off")
         self.repeat_mode = mode if mode in ("off", "one", "all") else "off"
         self._token = ""
@@ -274,6 +277,11 @@ class Playback(QObject):
         duration = self.player.duration()
         if duration > 0:
             target = min(target, duration)
+        if getattr(self.player, "backend", "qt") == "mpv":
+            self.player.setPosition(target)
+            if self._want_play:
+                self.player.play()
+            return
         source = self._expected_url
         self._pending_seek = target
         self._expected_url = ""
@@ -363,4 +371,6 @@ class Playback(QObject):
         self.prefetch_pool.clear()
         self.prefetch_pool.waitForDone(100)
         self.relay.close()
+        if hasattr(self.player, "shutdown"):
+            self.player.shutdown()
 

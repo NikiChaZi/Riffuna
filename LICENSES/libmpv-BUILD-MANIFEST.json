@@ -1,0 +1,30 @@
+{
+  "asset": "libmpv-v0.41.0-dev-gbaa3e11d4-40141553607-x86_64-w64-mingw32-lgpl.zip",
+  "url": "https://github.com/mpv-player/mpv/releases/download/git-release/libmpv-v0.41.0-dev-gbaa3e11d4-40141553607-x86_64-w64-mingw32-lgpl.zip",
+  "sha256": "7a256440129b90a760ada9245e98c8f9181d23b4192a44901c913aa74e6a02a8",
+  "size": 56826947,
+  "provider": "mpv-player/mpv first-party GitHub CI",
+  "license": "LGPL-3.0-or-later (first-party LGPL build; bundled FFmpeg LGPL variant)",
+  "upstream_commit": "baa3e11d42cb7978da634a8a6a3a55fe074d01be",
+  "source_url": "https://github.com/mpv-player/mpv/tree/baa3e11d42cb7978da634a8a6a3a55fe074d01be",
+  "source_archive": "https://github.com/mpv-player/mpv/archive/baa3e11d42cb7978da634a8a6a3a55fe074d01be.tar.gz",
+  "build_workflow": "https://github.com/mpv-player/mpv/actions/runs/40141553607",
+  "release": "https://github.com/mpv-player/mpv/releases/tag/git-release",
+  "distribution_note": "Keep this manifest, LGPL notices and corresponding build/dependency sources when redistributing.",
+  "dll_sha256": "bbb8bb09e4ffc93cd93430b620f40b09e086b7dc63f1651c8a1ce38853ed5169",
+  "configuration_verified": "mpv-configuration includes -Dgpl=false",
+  "ffmpeg": {
+    "runtime_version": "git-2026-10-24-9d9703e",
+    "upstream_commit": "9d9703e3b6f1e00e56b48067cbcf52a2fb808ee3",
+    "source_url": "https://github.com/FFmpeg/FFmpeg/tree/9d9703e3b6f1e00e56b48067cbcf52a2fb808ee3",
+    "source_archive": "https://github.com/FFmpeg/FFmpeg/archive/9d9703e3b6f1e00e56b48067cbcf52a2fb808ee3.tar.gz",
+    "license": "LGPL-3.0-or-later variant in first-party libmpv LGPL build"
+  },
+  "included_notices": [
+    "libmpv-LGPL-2.1-or-later.txt",
+    "libmpv-Copyright.txt",
+    "LGPL-3.0-only.txt",
+    "GPL-3.0-only.txt",
+    "libmpv-SOURCES.md"
+  ]
+}

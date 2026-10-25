@@ -1,6 +1,10 @@
 param([string]$DistPath = 'dist', [string]$Python = (Join-Path $PSScriptRoot '.venv\Scripts\python.exe'))
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+$libmpvPath = Join-Path $PSScriptRoot 'vendor\libmpv\libmpv-2.dll'
+if (-not (Test-Path -LiteralPath $libmpvPath -PathType Leaf)) {
+    throw 'libmpv is missing. Run .venv\Scripts\python.exe scripts\fetch_mpv.py first.'
+}
 $originalBuildPath = $env:PATH
 $Python = (Resolve-Path -LiteralPath $Python).Path
 $pythonBase = & $Python -c "import sys; print(sys.base_prefix)"
@@ -11,7 +15,7 @@ $env:PATH = @((Split-Path -Parent $Python), $pythonBase, (Join-Path $pythonBase 
 try {
     & $Python scripts\make_icon.py
     if ($LASTEXITCODE -ne 0) { throw 'Icon generation failed' }
-    & $Python -m PyInstaller --clean --noconfirm --distpath $DistPath --onedir --windowed --name Riffuna --icon assets\riffuna.ico --add-data "assets;assets" --recursive-copy-metadata yt-dlp --copy-metadata requests --copy-metadata urllib3 --copy-metadata certifi --copy-metadata charset-normalizer --copy-metadata idna --copy-metadata ytmusicapi --copy-metadata pyinstaller --copy-metadata PySide6 --copy-metadata PySide6_Essentials --copy-metadata PySide6_Addons --copy-metadata shiboken6 --collect-data ytmusicapi --collect-all yt_dlp_ejs launch.py
+    & $Python -m PyInstaller --clean --noconfirm --distpath $DistPath --onedir --windowed --name Riffuna --icon assets\riffuna.ico --add-data "assets;assets" --add-binary "vendor\libmpv\libmpv-2.dll;vendor\libmpv" --recursive-copy-metadata yt-dlp --copy-metadata requests --copy-metadata urllib3 --copy-metadata certifi --copy-metadata charset-normalizer --copy-metadata idna --copy-metadata ytmusicapi --copy-metadata pyinstaller --copy-metadata PySide6 --copy-metadata PySide6_Essentials --copy-metadata PySide6_Addons --copy-metadata shiboken6 --collect-data ytmusicapi --collect-all yt_dlp_ejs launch.py
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
     $releaseFolder = Join-Path (Join-Path $PSScriptRoot $DistPath) 'Riffuna'
     Copy-Item -LiteralPath 'LICENSE','LICENSING.md','README.md','CHANGELOG.md','THIRD_PARTY_NOTICES.md' -Destination $releaseFolder
