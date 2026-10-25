@@ -34,6 +34,6 @@ attribution and per-file licensing.
 Riffuna's PolyForm Noncommercial restrictions do not apply to libmpv, FFmpeg or
 other third-party components. Users retain their licenses' rights to modify and
 replace those libraries and to reverse-engineer the combined application for
-debugging such modifications. An ABI-compatible replacement DLL may be placed
-at `_internal/vendor/libmpv/libmpv-2.dll` in the Windows application folder;
-no signature or hash check prevents the application from loading a replacement.
+debugging such modifications. For the one-file application, set the RIFFUNA_LIBMPV environment variable
+to an absolute path to an ABI-compatible replacement DLL before launching.
+No signature or hash check prevents the application from loading a replacement.
