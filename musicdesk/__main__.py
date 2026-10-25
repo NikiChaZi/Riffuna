@@ -4,35 +4,22 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QTimer
-from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtNetwork import QNetworkProxyFactory
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from .branding import APP_NAME
+from .appearance import configure_app, prepare_windows_identity, write_startup_report
 from .storage import Library, data_directory
-from .style import STYLE
 from .window import MainWindow
 
 
 def main():
+    prepare_windows_identity()
     app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setApplicationDisplayName(APP_NAME)
-    app.setStyle("Fusion")
-    app.setFont(QFont("Segoe UI", 10))
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor("#151716"))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor("#F1F0E8"))
-    palette.setColor(QPalette.ColorRole.Base, QColor("#1D201F"))
-    palette.setColor(QPalette.ColorRole.Text, QColor("#F1F0E8"))
-    palette.setColor(QPalette.ColorRole.Button, QColor("#252925"))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#F1F0E8"))
-    palette.setColor(QPalette.ColorRole.Highlight, QColor("#6B4534"))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#F1F0E8"))
-    app.setPalette(palette)
-    app.setStyleSheet(STYLE)
+    configure_app(app)
     QNetworkProxyFactory.setUseSystemConfiguration(True)
     data = data_directory()
     data.mkdir(parents=True, exist_ok=True)
@@ -52,6 +39,9 @@ def main():
         screen = app.primaryScreen().availableGeometry()
         window.resize(min(1280, screen.width() - 40), min(800, screen.height() - 50))
         window.move(screen.center() - window.rect().center())
+        ui_report = os.environ.get("MUSICDESK_UI_REPORT")
+        if ui_report:
+            QTimer.singleShot(150, lambda: write_startup_report(app, window, Path(ui_report)))
         autoclose = os.environ.get("MUSICDESK_AUTOCLOSE_MS")
         if autoclose:
             QTimer.singleShot(int(autoclose), window.close)

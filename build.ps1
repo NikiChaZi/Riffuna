@@ -1,16 +1,17 @@
-param([string]$DistPath = 'dist')
+param([string]$DistPath = 'dist', [string]$Python = (Join-Path $PSScriptRoot '.venv\Scripts\python.exe'))
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $originalBuildPath = $env:PATH
-$pythonBase = & '.\.venv\Scripts\python.exe' -c "import sys; print(sys.base_prefix)"
+$Python = (Resolve-Path -LiteralPath $Python).Path
+$pythonBase = & $Python -c "import sys; print(sys.base_prefix)"
 if ($LASTEXITCODE -ne 0) { throw 'Python environment unavailable' }
 # Resolve native dependencies only from this Python and Windows. Unrelated
 # tools on PATH can expose incompatible same-named ICU/CRT libraries.
-$env:PATH = @((Join-Path $PSScriptRoot '.venv\Scripts'), $pythonBase, (Join-Path $pythonBase 'Scripts'), (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot) -join ';'
+$env:PATH = @((Split-Path -Parent $Python), $pythonBase, (Join-Path $pythonBase 'Scripts'), (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot) -join ';'
 try {
-    & '.\.venv\Scripts\python.exe' scripts\make_icon.py
+    & $Python scripts\make_icon.py
     if ($LASTEXITCODE -ne 0) { throw 'Icon generation failed' }
-    & '.\.venv\Scripts\python.exe' -m PyInstaller --clean --noconfirm --distpath $DistPath --onedir --windowed --name Riffuna --icon assets\riffuna.ico --recursive-copy-metadata yt-dlp --copy-metadata requests --copy-metadata urllib3 --copy-metadata certifi --copy-metadata charset-normalizer --copy-metadata idna --copy-metadata ytmusicapi --copy-metadata pyinstaller --copy-metadata PySide6 --copy-metadata PySide6_Essentials --copy-metadata PySide6_Addons --copy-metadata shiboken6 --collect-data ytmusicapi --collect-all yt_dlp_ejs launch.py
+    & $Python -m PyInstaller --clean --noconfirm --distpath $DistPath --onedir --windowed --name Riffuna --icon assets\riffuna.ico --add-data "assets;assets" --recursive-copy-metadata yt-dlp --copy-metadata requests --copy-metadata urllib3 --copy-metadata certifi --copy-metadata charset-normalizer --copy-metadata idna --copy-metadata ytmusicapi --copy-metadata pyinstaller --copy-metadata PySide6 --copy-metadata PySide6_Essentials --copy-metadata PySide6_Addons --copy-metadata shiboken6 --collect-data ytmusicapi --collect-all yt_dlp_ejs launch.py
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
     $releaseFolder = Join-Path (Join-Path $PSScriptRoot $DistPath) 'Riffuna'
     Copy-Item -LiteralPath 'LICENSE','README.md','CHANGELOG.md','THIRD_PARTY_NOTICES.md' -Destination $releaseFolder

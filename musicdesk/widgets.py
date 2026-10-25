@@ -3,7 +3,7 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QStyle, QStyleOptionSlider, QToolTip, QSizePolicy, QVBoxLayout, QWidget
 
@@ -29,6 +29,75 @@ def icon_button(name: str, tooltip: str, size: int = 36, parent=None) -> QPushBu
     button.setAccessibleName(tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     return button
+
+
+def tile_pixmap(glyph: str, size: int = 64, tone: str = "coral") -> QPixmap:
+    colors = {"coral": ("#FF875F", "#151A19"), "sage": ("#364E46", "#D8E5D3"),
+              "sand": ("#D1BC86", "#292B22"), "teal": ("#2F5152", "#C6E2DB")}
+    background, foreground = colors.get(tone, colors["coral"])
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.setDevicePixelRatio(2)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(background))
+    painter.drawRoundedRect(QRectF(0, 0, size, size), size * .22, size * .22)
+    mark_size = round(size * .48)
+    icon(glyph, foreground, mark_size).paint(painter, (size - mark_size) // 2,
+                                           (size - mark_size) // 2, mark_size, mark_size)
+    painter.end()
+    return pixmap
+
+
+class RecordArt(QWidget):
+    """Original, flat record motif; decorative and independent of playback."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(152, 152)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#FF875F"))
+        painter.drawRoundedRect(QRectF(10, 10, 132, 132), 20, 20)
+        painter.setBrush(QColor("#1A2420"))
+        painter.drawEllipse(QRectF(21, 21, 110, 110))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#526355"), 1.5))
+        for radius in (35, 43, 50):
+            painter.drawEllipse(QRectF(76 - radius, 76 - radius, radius * 2, radius * 2))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#E5D5AD"))
+        painter.drawEllipse(QRectF(56, 56, 40, 40))
+        painter.setBrush(QColor("#1A2420"))
+        painter.drawEllipse(QRectF(72, 72, 8, 8))
+        painter.end()
+
+
+class QueryCard(QPushButton):
+    def __init__(self, title: str, subtitle: str, tone: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("queryCard")
+        self.setAccessibleName("Искать: " + title + ". " + subtitle)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(88)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+        art = label("")
+        art.setPixmap(tile_pixmap("note", 40, tone))
+        art.setFixedSize(40, 40)
+        layout.addWidget(art)
+        texts = QVBoxLayout()
+        texts.setSpacing(4)
+        texts.addWidget(ElidedLabel(title, "trackTitle"))
+        texts.addWidget(ElidedLabel(subtitle, "cardSubtitle"))
+        layout.addLayout(texts, 1)
+        for child in self.findChildren(QLabel):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
 
 class PointerSlider(QSlider):
@@ -192,11 +261,12 @@ class Artwork(QObject):
 
 
 class Cover(QWidget):
-    def __init__(self, artwork: Artwork, size: int = 48, parent=None):
+    def __init__(self, artwork: Artwork, size: int = 48, parent=None, *, seed: str = ""):
         super().__init__(parent)
         self.setFixedSize(size, size)
         self.artwork = artwork
         self.url = ""
+        self.seed = seed
         self.pixmap = QPixmap()
         artwork.loaded.connect(self._loaded)
 
@@ -218,12 +288,17 @@ class Cover(QWidget):
         path = QPainterPath()
         path.addRoundedRect(rect, 6, 6)
         painter.setClipPath(path)
-        painter.fillRect(rect, QColor("#343D31"))
+        tones = ("#354B47", "#514037", "#494C37", "#34494D")
+        painter.fillRect(rect, QColor(tones[sum(self.seed.encode()) % len(tones)]))
         if not self.pixmap.isNull():
             scaled = self.pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
             painter.drawPixmap((self.width() - scaled.width()) // 2, (self.height() - scaled.height()) // 2, scaled)
         else:
-            icon("wave", "#B5C1A9", 25).paint(painter, (self.width() - 25) // 2, (self.height() - 25) // 2, 25, 25)
+            painter.setPen(QPen(QColor("#C6CCB5"), 1.2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            margin = self.width() * .18
+            painter.drawEllipse(QRectF(margin, margin, self.width() - margin * 2, self.height() - margin * 2))
+            painter.drawEllipse(QRectF(self.width() * .4, self.height() * .4, self.width() * .2, self.height() * .2))
 
 
 class TrackRow(QFrame):
@@ -244,11 +319,11 @@ class TrackRow(QFrame):
         self.setProperty("current", False)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 7, 8, 7)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
         self.play_button = icon_button("play", "Слушать: " + track.title, 32)
         self.play_button.clicked.connect(lambda: self.play_requested.emit(track))
         layout.addWidget(self.play_button)
-        cover = Cover(artwork, 48)
+        cover = Cover(artwork, 44, seed=track.video_id)
         cover.set_url(track.thumbnail)
         layout.addWidget(cover)
         texts = QVBoxLayout()
@@ -259,10 +334,16 @@ class TrackRow(QFrame):
             views = f"{track.view_count:,}".replace(",", "\u202f")
             metadata += f" · Просмотры: {views}"
         self.metadata = ElidedLabel(metadata, "muted")
-        texts.addWidget(self.metadata)
-        layout.addLayout(texts, 1)
+        metadata_row = QHBoxLayout()
+        metadata_row.setSpacing(8)
         if track.version:
-            layout.addWidget(label(track.version, "badge"))
+            badge = label(track.version, "badge")
+            badge.setFixedHeight(18)
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            metadata_row.addWidget(badge)
+        metadata_row.addWidget(self.metadata, 1)
+        texts.addLayout(metadata_row)
+        layout.addLayout(texts, 1)
         duration = label(time_label(track.duration) if track.duration else "—", "muted")
         duration.setFixedWidth(47)
         duration.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -302,7 +383,7 @@ class QueueRow(QFrame):
     play_requested = Signal(object)
     remove_requested = Signal(int)
 
-    def __init__(self, track: Track, index: int, current: bool, parent=None):
+    def __init__(self, track: Track, index: int, current: bool, parent=None, *, artwork: Artwork | None = None):
         super().__init__(parent)
         self.setObjectName("trackRow")
         self.setProperty("current", current)
@@ -313,6 +394,10 @@ class QueueRow(QFrame):
         play.setIcon(icon("wave" if current else "play", "#FF875F" if current else "#B2B8AF"))
         play.clicked.connect(lambda: self.play_requested.emit(track))
         layout.addWidget(play)
+        if artwork is not None:
+            cover = Cover(artwork, 32, seed=track.video_id)
+            cover.set_url(track.thumbnail)
+            layout.addWidget(cover)
         texts = QVBoxLayout()
         texts.setSpacing(3)
         texts.addWidget(ElidedLabel(track.title, "trackTitle"))

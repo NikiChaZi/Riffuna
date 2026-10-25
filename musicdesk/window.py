@@ -10,12 +10,13 @@ from PySide6.QtWidgets import (
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from .appearance import app_icon
 from .branding import APP_NAME
 from .icons import icon
 from .models import Track, time_label
 from .playback import Playback
 from .storage import Library
-from .widgets import Artwork, Cover, ElidedLabel, PointerSlider, QueueRow, SortComboBox, TrackRow, icon_button, label
+from .widgets import Artwork, Cover, ElidedLabel, PointerSlider, QueryCard, QueueRow, RecordArt, SortComboBox, TrackRow, icon_button, label, tile_pixmap
 from .workers import Task
 from .youtube import YouTubeSource
 
@@ -45,7 +46,7 @@ class MainWindow(QMainWindow):
         self.last_query = ""
         self._shutting_down = False
         self.setWindowTitle(APP_NAME)
-        self.setWindowIcon(icon("wave", "#FF875F", 64))
+        self.setWindowIcon(app_icon())
         self.setMinimumSize(1000, 650)
         self.resize(1280, 800)
         self._build()
@@ -74,22 +75,27 @@ class MainWindow(QMainWindow):
     def _sidebar(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("sidebar")
-        panel.setFixedWidth(176)
+        self.sidebar_panel = panel
+        panel.setFixedWidth(192)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(12, 24, 12, 20)
         layout.setSpacing(7)
         brand = QHBoxLayout()
         brand.setSpacing(10)
         mark = QLabel()
-        mark.setPixmap(icon("wave", "#FF875F", 27).pixmap(27, 27))
+        mark.setPixmap(app_icon().pixmap(36, 36))
         brand.addWidget(mark)
         brand.addWidget(label(APP_NAME, "brand"))
         brand.addStretch()
         layout.addLayout(brand)
-        layout.addSpacing(30)
+        layout.addSpacing(24)
+        layout.addWidget(label("ОБЗОР", "eyebrow"))
         self.nav: dict[str, QPushButton] = {}
         for key, title, glyph in [("home", "Главная", "home"), ("search", "Поиск", "search"),
                                    ("likes", "Мне нравится", "heart"), ("history", "История", "history")]:
+            if key == "likes":
+                layout.addSpacing(18)
+                layout.addWidget(label("БИБЛИОТЕКА", "eyebrow"))
             button = QPushButton(title)
             button.setObjectName("nav")
             button.setIcon(icon(glyph))
@@ -101,13 +107,13 @@ class MainWindow(QMainWindow):
             self.nav[key] = button
             layout.addWidget(button)
         layout.addStretch()
-        layout.addWidget(label("ТВОЯ БИБЛИОТЕКА", "eyebrow"))
+        layout.addWidget(label("ЛОКАЛЬНО", "eyebrow"))
         self.likes_count = label("Пока без лайков", "muted")
         layout.addWidget(self.likes_count)
         layout.addSpacing(18)
         layout.addWidget(label("Лайки и история\nхранятся на этом ПК", "tiny"))
         layout.addSpacing(14)
-        layout.addWidget(label("DESKTOP · 0.1", "tiny"))
+        layout.addWidget(label("RIFFUNA / WINDOWS", "tiny"))
         return panel
 
     def _content(self) -> QWidget:
@@ -122,6 +128,8 @@ class MainWindow(QMainWindow):
         self.search_input.setObjectName("searchInput")
         self.search_input.setPlaceholderText("Трек, исполнитель или ссылка YouTube")
         self.search_input.setAccessibleName("Поиск музыки")
+        self.search_input.addAction(icon("search"), QLineEdit.ActionPosition.LeadingPosition)
+        self.search_input.setToolTip("Поиск музыки · Ctrl+F")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.setFixedHeight(44)
         self.search_input.setMaxLength(500)
@@ -150,10 +158,19 @@ class MainWindow(QMainWindow):
         results_layout = QVBoxLayout(self.results_page)
         results_layout.setContentsMargins(0, 0, 0, 0)
         results_layout.setSpacing(12)
-        heading_row = QHBoxLayout()
+        self.section_header = QFrame()
+        self.section_header.setObjectName("sectionHeader")
+        heading_row = QHBoxLayout(self.section_header)
+        heading_row.setContentsMargins(16, 14, 16, 14)
+        heading_row.setSpacing(16)
+        self.section_cover = label("")
+        self.section_cover.setFixedSize(64, 64)
+        heading_row.addWidget(self.section_cover)
         titles = QVBoxLayout()
         titles.setSpacing(5)
-        self.page_title = label("Результаты", "pageTitle")
+        self.page_kind = label("ПОИСК", "eyebrow")
+        titles.addWidget(self.page_kind)
+        self.page_title = ElidedLabel("Результаты", "pageTitle")
         self.page_subtitle = label("", "muted")
         self.page_subtitle.setWordWrap(True)
         titles.addWidget(self.page_title)
@@ -161,10 +178,10 @@ class MainWindow(QMainWindow):
         heading_row.addLayout(titles, 1)
         self.play_all = QPushButton("Слушать всё")
         self.play_all.setIcon(icon("play", "#151716"))
-        self.play_all.setObjectName("primary")
+        self.play_all.setObjectName("listenAll")
         self.play_all.clicked.connect(lambda: self.playback.play_all(self.visible_tracks))
         heading_row.addWidget(self.play_all)
-        results_layout.addLayout(heading_row)
+        results_layout.addWidget(self.section_header)
         self.search_controls = QWidget()
         search_controls_layout = QHBoxLayout(self.search_controls)
         search_controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -198,7 +215,7 @@ class MainWindow(QMainWindow):
         empty_layout.setContentsMargins(24, 40, 24, 40)
         empty_layout.addStretch()
         self.empty_icon = label("")
-        self.empty_icon.setPixmap(icon("search", "#FF875F", 40).pixmap(40, 40))
+        self.empty_icon.setPixmap(tile_pixmap("search", 64, "sage"))
         self.empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_layout.addWidget(self.empty_icon)
         empty_layout.addSpacing(12)
@@ -206,10 +223,13 @@ class MainWindow(QMainWindow):
         self.empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_layout.addWidget(self.empty_title)
         self.empty_text = label("Найди любимый трек или исполнителя", "muted")
+        self.empty_text.setFixedWidth(360)
+        self.empty_text.setMinimumHeight(40)
         self.empty_text.setWordWrap(True)
         self.empty_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty_layout.addWidget(self.empty_text)
+        empty_layout.addWidget(self.empty_text, 0, Qt.AlignmentFlag.AlignHCenter)
         self.retry = QPushButton("Повторить поиск")
+        self.retry.setMinimumHeight(40)
         self.retry.clicked.connect(self.search)
         self.retry.hide()
         empty_layout.addWidget(self.retry, 0, Qt.AlignmentFlag.AlignCenter)
@@ -242,55 +262,80 @@ class MainWindow(QMainWindow):
         scroll.setWidget(body)
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(22)
+        layout.setSpacing(18)
         hero = QFrame()
         hero.setObjectName("hero")
-        hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(26, 25, 26, 26)
-        hero_layout.setSpacing(10)
-        hero_layout.addWidget(label("ТВОЙ МУЗЫКАЛЬНЫЙ УГОЛОК", "eyebrow"))
-        hero_layout.addWidget(label("Что послушаем?", "heroTitle"))
-        description = label("Любимые треки, редкие версии и новые находки.\nНачни с названия или вставь ссылку YouTube.", "muted")
+        hero_layout = QHBoxLayout(hero)
+        hero_layout.setContentsMargins(24, 24, 20, 24)
+        hero_layout.setSpacing(18)
+        hero_text = QVBoxLayout()
+        hero_text.setSpacing(12)
+        hero_text.addWidget(label("ОРИГИНАЛЫ · РЕМИКСЫ · SLOWED", "eyebrow"))
+        hero_title = label("Любимая музыка.\nЛюбая её версия.", "heroTitle")
+        hero_title.setWordWrap(True)
+        hero_text.addWidget(hero_title)
+        description = label("Находи знакомые треки и новое звучание на YouTube.", "muted")
         description.setWordWrap(True)
-        hero_layout.addWidget(description)
-        hero_layout.addSpacing(8)
+        hero_text.addWidget(description)
+        hero_text.addSpacing(4)
         start = QPushButton("Найти музыку")
         start.setObjectName("primary")
         start.setIcon(icon("search", "#151716"))
         start.setFixedWidth(166)
         start.clicked.connect(self._focus_search)
-        hero_layout.addWidget(start)
+        hero_text.addWidget(start, 0, Qt.AlignmentFlag.AlignLeft)
+        hero_layout.addLayout(hero_text, 1)
+        self.hero_art = RecordArt()
+        hero_layout.addWidget(self.hero_art)
         layout.addWidget(hero)
-        layout.addWidget(label("Можно начать отсюда", "sectionTitle"))
+        section_heading = QHBoxLayout()
+        section_heading.addWidget(label("Отправная точка", "sectionTitle"), 1)
+        section_heading.addWidget(label("ПРИМЕРЫ ПОИСКА", "eyebrow"))
+        layout.addLayout(section_heading)
         grid = QGridLayout()
         grid.setSpacing(10)
         queries = [
-            ("Дора", "Втюрилась · знакомый трек", "Дора Втюрилась"),
-            ("worry", "LONOWN · ultra slowed", "LONOWN riserayss worry ultra slowed"),
-            ("Paparazzi", "Alximo · dubstep / slowed", "Alximo Paparazzi Dubstep Slowed"),
-            ("lucy~", "Corbon Amodio · slowed + reverb", "Corbon Amodio lucy slowed reverb"),
+            ("Дора", "Втюрилась · оригинал", "Дора Втюрилась", "coral"),
+            ("worry", "LONOWN · ultra slowed", "LONOWN riserayss worry ultra slowed", "teal"),
+            ("Paparazzi", "Alximo · dubstep / slowed", "Alximo Paparazzi Dubstep Slowed", "sand"),
+            ("lucy~", "Corbon Amodio · slowed", "Corbon Amodio lucy slowed reverb", "sage"),
         ]
-        for index, (title, subtitle, query) in enumerate(queries):
-            button = QPushButton(title + "\n" + subtitle)
-            button.setObjectName("queryCard")
-            button.setMinimumHeight(78)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        for index, (title, subtitle, query, tone) in enumerate(queries):
+            button = QueryCard(title, subtitle, tone)
             button.clicked.connect(lambda checked=False, text=query: self.search_query(text))
             grid.addWidget(button, index // 2, index % 2)
         layout.addLayout(grid)
-        self.home_library = QFrame()
-        self.home_library.setObjectName("infoCard")
+        self.home_library = QWidget()
         library_layout = QHBoxLayout(self.home_library)
-        library_layout.setContentsMargins(18, 16, 18, 16)
-        texts = QVBoxLayout()
-        texts.addWidget(label("Собирай своё", "sectionTitle"))
-        subtitle = label("Сохраняй треки сердечком — они останутся в библиотеке.", "muted")
-        subtitle.setWordWrap(True)
-        texts.addWidget(subtitle)
-        library_layout.addLayout(texts, 1)
-        likes = icon_button("heart", "Открыть понравившиеся треки", 40)
-        likes.clicked.connect(lambda: self.show_view("likes"))
-        library_layout.addWidget(likes)
+        library_layout.setContentsMargins(0, 0, 0, 0)
+        library_layout.setSpacing(10)
+        for key, title, glyph, tone in (("likes", "Мне нравится", "heart_fill", "coral"),
+                                        ("history", "История", "history", "sage")):
+            card = QPushButton()
+            card.setObjectName("libraryCard")
+            card.setMinimumHeight(80)
+            card.setAccessibleName("Открыть: " + title)
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(14, 14, 14, 14)
+            card_layout.setSpacing(12)
+            mark = label("")
+            mark.setPixmap(tile_pixmap(glyph, 40, tone))
+            card_layout.addWidget(mark)
+            texts = QVBoxLayout()
+            texts.setSpacing(4)
+            texts.addWidget(label(title, "trackTitle"))
+            caption = label("", "cardSubtitle")
+            texts.addWidget(caption)
+            if key == "likes":
+                self.home_likes_caption = caption
+            else:
+                self.home_history_caption = caption
+            card_layout.addLayout(texts, 1)
+            for child in card.findChildren(QLabel):
+                child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            card.clicked.connect(lambda checked=False, view=key: self.show_view(view))
+            library_layout.addWidget(card, 1)
         layout.addWidget(self.home_library)
         layout.addStretch()
         return scroll
@@ -298,18 +343,38 @@ class MainWindow(QMainWindow):
     def _queue_panel(self) -> QFrame:
         self.queue_panel = QFrame()
         self.queue_panel.setObjectName("queuePanel")
-        self.queue_panel.setFixedWidth(270)
+        self.queue_panel.setFixedWidth(272)
         layout = QVBoxLayout(self.queue_panel)
         layout.setContentsMargins(16, 24, 14, 16)
         layout.setSpacing(14)
         header = QHBoxLayout()
         header.addWidget(label("Очередь", "sectionTitle"), 1)
+        self.queue_caption = label("0", "countBadge")
+        header.addWidget(self.queue_caption)
         close = icon_button("close", "Скрыть очередь", 32)
         close.clicked.connect(self._hide_queue)
         header.addWidget(close)
         layout.addLayout(header)
-        self.queue_caption = label("Пока пусто", "muted")
-        layout.addWidget(self.queue_caption)
+        self.queue_now = QFrame()
+        self.queue_now.setObjectName("queueNow")
+        now_layout = QVBoxLayout(self.queue_now)
+        now_layout.setContentsMargins(12, 12, 12, 12)
+        now_layout.setSpacing(10)
+        now_layout.addWidget(label("СЕЙЧАС В ПЛЕЕРЕ", "eyebrow"))
+        now_row = QHBoxLayout()
+        now_row.setSpacing(10)
+        self.queue_current_cover = Cover(self.artwork, 44)
+        now_row.addWidget(self.queue_current_cover)
+        now_text = QVBoxLayout()
+        now_text.setSpacing(4)
+        self.queue_current_title = ElidedLabel("", "trackTitle")
+        self.queue_current_artist = ElidedLabel("", "muted")
+        now_text.addWidget(self.queue_current_title)
+        now_text.addWidget(self.queue_current_artist)
+        now_row.addLayout(now_text, 1)
+        now_layout.addLayout(now_row)
+        layout.addWidget(self.queue_now)
+        layout.addWidget(label("СПИСОК ВОСПРОИЗВЕДЕНИЯ", "eyebrow"))
         self.queue_list = QListWidget()
         self.queue_list.setSpacing(3)
         self.queue_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -326,11 +391,12 @@ class MainWindow(QMainWindow):
     def _player_bar(self) -> QFrame:
         bar = QFrame()
         bar.setObjectName("player")
-        bar.setFixedHeight(104)
+        bar.setFixedHeight(100)
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(20, 12, 20, 12)
-        layout.setSpacing(24)
+        layout.setSpacing(20)
         current = QWidget()
+        self.current_info = current
         current.setFixedWidth(280)
         current_layout = QHBoxLayout(current)
         current_layout.setContentsMargins(0, 0, 0, 0)
@@ -406,14 +472,16 @@ class MainWindow(QMainWindow):
         self.volume.setFixedWidth(92)
         self.volume.valueChanged.connect(self.playback.set_volume)
         volume.addWidget(self.volume)
-        self.output_button = QPushButton("Вывод ▾")
+        self.output_button = QPushButton("Вывод")
+        self.output_button.setObjectName("outputButton")
+        self.output_button.setIcon(icon("chevron_down", "#B2B8AF", 14))
         self.output_button.setAccessibleName("Выбрать устройство вывода звука")
         self.output_button.clicked.connect(self._choose_audio_output)
         volume.addWidget(self.output_button)
         self.playback.routing.changed.connect(self._audio_output_changed)
         self._audio_output_changed()
         right.addLayout(volume)
-        self.player_status = label("Готово к музыке", "tiny")
+        self.player_status = label("Готово к музыке", "playerStatus")
         self.player_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right.addWidget(self.player_status)
         layout.addLayout(right)
@@ -588,8 +656,11 @@ class MainWindow(QMainWindow):
         selected = self.track_list.currentItem() if preserve_position else None
         selected_id = selected.data(Qt.ItemDataRole.UserRole).video_id if selected else None
         self.stack.setCurrentWidget(self.results_page)
-        self.page_title.setText(title)
+        self.page_title.set_full_text(title)
         self.page_subtitle.setText(subtitle)
+        section_glyph, section_tone = {"likes": ("heart_fill", "coral"), "history": ("history", "sage")}.get(self.view, ("search", "sand"))
+        self.section_cover.setPixmap(tile_pixmap(section_glyph, 64, section_tone))
+        self.page_kind.setText("ТВОЯ БИБЛИОТЕКА" if self.view in {"likes", "history"} else "ПОИСК В YOUTUBE")
         self.visible_tracks = list(tracks)
         self.rows.clear()
         self.track_list.clear()
@@ -622,7 +693,8 @@ class MainWindow(QMainWindow):
     def _empty_state(self, title: str, message: str, glyph: str, retry: bool = False):
         self.empty_title.setText(title)
         self.empty_text.setText(message)
-        self.empty_icon.setPixmap(icon(glyph, "#FF875F", 40).pixmap(40, 40))
+        self.empty_text.setMinimumHeight(max(40, self.empty_text.heightForWidth(360)))
+        self.empty_icon.setPixmap(tile_pixmap(glyph, 64, "sage"))
         self.retry.setVisible(retry)
         self.results_stack.setCurrentWidget(self.empty)
 
@@ -659,6 +731,8 @@ class MainWindow(QMainWindow):
     def _refresh_likes(self):
         self.liked = self.library.liked_ids()
         self.likes_count.setText(f"Сохранено треков: {len(self.liked)}" if self.liked else "Пока без лайков")
+        self.home_likes_caption.setText(f"Сохранено: {len(self.liked)}" if self.liked else "Сохраняй сердечком")
+        self.home_history_caption.setText("Недавние прослушивания")
         for row in self.rows:
             row.set_liked(row.track.video_id in self.liked)
         liked = self.playback.current is not None and self.playback.current.video_id in self.liked
@@ -678,14 +752,14 @@ class MainWindow(QMainWindow):
         selected_id = selected.data(Qt.ItemDataRole.UserRole).video_id if selected else None
         self.queue_list.clear()
         queue = self.playback.queue
-        self.queue_caption.setText(f"Треков: {len(queue.tracks)}" if queue.tracks else "Пока пусто")
+        self.queue_caption.setText(str(len(queue.tracks)))
         self.queue_empty.setVisible(not queue.tracks)
         self.queue_list.setVisible(bool(queue.tracks))
         for index, track in enumerate(queue.tracks):
             item = QListWidgetItem(self.queue_list)
             item.setData(Qt.ItemDataRole.UserRole, track)
             item.setSizeHint(QSize(0, 62))
-            row = QueueRow(track, index, index == queue.index)
+            row = QueueRow(track, index, index == queue.index, artwork=self.artwork)
             row.play_requested.connect(self.playback.play)
             row.remove_requested.connect(self.playback.remove)
             self.queue_list.setItemWidget(item, row)
@@ -701,7 +775,13 @@ class MainWindow(QMainWindow):
         self.notice.hide()
         self.current_title.set_full_text(track.title if track else "Выбери первый трек")
         self.current_artist.set_full_text(track.artist if track else "Музыка начинается с поиска")
+        self.current_cover.seed = track.video_id if track else ""
         self.current_cover.set_url(track.thumbnail if track else "")
+        self.queue_now.setVisible(track is not None)
+        self.queue_current_cover.seed = track.video_id if track else ""
+        self.queue_current_cover.set_url(track.thumbnail if track else "")
+        self.queue_current_title.set_full_text(track.title if track else "")
+        self.queue_current_artist.set_full_text(track.artist if track else "")
         self.current_like.setEnabled(track is not None)
         self.setWindowTitle(f"{track.title} — {APP_NAME}" if track else APP_NAME)
         self.seek.setValue(0)
@@ -741,6 +821,15 @@ class MainWindow(QMainWindow):
         self.notice.style().unpolish(self.notice)
         self.notice.style().polish(self.notice)
         self.notice.show()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "sidebar_panel"):
+            compact = self.width() < 1120
+            self.sidebar_panel.setFixedWidth(168 if compact else 192)
+            self.queue_panel.setFixedWidth(244 if compact else 272)
+            self.current_info.setFixedWidth(240 if compact else 280)
+            self.hero_art.setVisible(not compact)
 
     def closeEvent(self, event):
         self._shutting_down = True

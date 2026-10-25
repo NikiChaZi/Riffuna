@@ -1,0 +1,27 @@
+{
+  "frozen": false,
+  "platform": "windows",
+  "icon_asset_exists": true,
+  "application_icon": true,
+  "window_icon": true,
+  "icon_sizes": [
+    16,
+    20,
+    24,
+    30,
+    32,
+    36,
+    40,
+    48,
+    60,
+    64,
+    72,
+    80,
+    96,
+    128,
+    256
+  ],
+  "windows_app_id": "Riffuna.Desktop",
+  "native_small_icon": true,
+  "native_big_icon": true
+}
