@@ -342,6 +342,8 @@ class ExpandedPlayer(QWidget):
         if accepted and document.state == LyricsState.SYNCED and document.timing_confirmed:
             self.lyrics.footer.setText("Совпадение по метаданным и длительности" if payload.get("match_quality") == "metadata_duration"
                                        else "Таймкоды из выбранного LRC")
+        if accepted and payload.get("cache_stale"):
+            self.lyrics.footer.setText("Сохранённый текст · сервис временно недоступен")
         return accepted
 
     def set_artwork(self, recording_id: str, pixmap: QPixmap):

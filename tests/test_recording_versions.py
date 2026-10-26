@@ -279,3 +279,84 @@ def test_uncensored_claim_combined_with_remix_keeps_both_distinct_disclosures():
     assert version.label == 'REMIX · «Без цензуры» — заявлено'
     assert 'заявлено в названии' in version.evidence
     assert not version.verified_uncensored
+
+
+@pytest.mark.parametrize('artist', ['Слава КПСС - Topic', 'Слава КПСС — Topic',
+                                   'Слава КПСС – TOPIC', '  Слава КПСС - Topic  '])
+def test_topic_suffix_is_removed_from_real_source_queries_not_just_comparison(artist):
+    from musicdesk.youtube import _query_score
+    reference = Track('Pd38CuY4yWU', 'Кайфоград', artist, 154)
+    candidate = track(2, 'Кайфоград', 'Слава КПСС', 154)
+    source = FakeSource(lambda query: [candidate] if _query_score(query, candidate.title, candidate.artist) >= 0 else [])
+    versions = VersionFinder(source).find(reference)
+    assert [v.track for v in versions] == [candidate]
+    assert source.calls[0][0] == 'Слава КПСС Кайфоград'
+    assert all('topic' not in query.casefold() for query, _, _ in source.calls)
+    assert not versions[0].verified_uncensored
+
+
+def test_topic_as_part_of_a_real_artist_name_is_preserved():
+    source = FakeSource([])
+    VersionFinder(source).find(track(artist='Hot Topic'))
+    assert source.calls[0][0] == 'Hot Topic Песня'
+
+
+@pytest.mark.parametrize('title', ['Песня — Слава КПСС (без цензуры)',
+    'Слава КПСС (без цензуры) — Песня', 'Песня (без цензуры) — Слава КПСС'])
+def test_explicit_credit_in_either_orientation_preserves_claim_without_verifying_it(title):
+    version, = find([track(2, title, artist='Upload channel')])
+    assert 'заявлено' in version.label
+    assert 'исполнитель указан в заголовке' in version.evidence
+    assert not version.verified_uncensored
+
+
+def test_reference_lookup_is_called_once_and_retains_category_and_visual_evidence():
+    from musicdesk.youtube import RecordingUpload
+    class Source(FakeSource):
+        lookups = []
+        def recording_candidates(self, reference, limit):
+            self.lookups.append((reference, limit))
+            return [RecordingUpload(track(2, 'Песня — Слава КПСС (без цензуры)', artist='Upload channel'),
+                    'Категория YouTube: People & Blogs. 25 статичных кадров.')]
+    source = Source(SourceError('music endpoint offline'))
+    version, = VersionFinder(source).find(track())
+    assert source.lookups == [(track(), 4)]
+    assert len(source.calls) == 1
+    assert 'People & Blogs' in version.evidence and '25 статичных кадров' in version.evidence
+    assert not version.verified_uncensored
+
+
+def test_reference_lookup_rechecks_identity_and_excludes_current_and_duplicates():
+    from musicdesk.youtube import RecordingUpload
+    class Source(FakeSource):
+        def recording_candidates(self, reference, limit):
+            return [RecordingUpload(t, 'evidence') for t in
+                    [track(), track(2), track(2), track(3, 'Wrong song')]]
+    version, = VersionFinder(Source()).find(track())
+    assert version.track == track(2)
+
+
+def test_failed_reference_lookup_retains_catalog_results_but_reports_total_outage():
+    class Source(FakeSource):
+        def recording_candidates(self, reference, limit):
+            raise SourceError('offline')
+    assert VersionFinder(Source([track(2)])).find(track())[0].track == track(2)
+    with pytest.raises(SourceError):
+        VersionFinder(Source(SourceError('offline'))).find(track())
+
+
+def test_reverse_credit_is_checked_even_when_channel_has_the_performer_name():
+    version, = find([track(2, 'Песня — Слава КПСС (без цензуры)')])
+    assert 'заявлено' in version.label
+    assert not version.verified_uncensored
+
+
+def test_reference_lookup_outage_shortcut_retains_earlier_catalog_matches():
+    from musicdesk.youtube import RecordingUpload
+    class Source(FakeSource):
+        def recording_candidates(self, reference, limit):
+            return [RecordingUpload(track(3), 'static frame evidence')]
+    source = Source(lambda query: [track(2)] if query.endswith('Песня') else SourceError('catalog offline'))
+    versions = VersionFinder(source).find(track())
+    assert {v.track.video_id for v in versions} == {track(2).video_id, track(3).video_id}
+    assert len(source.calls) == 2

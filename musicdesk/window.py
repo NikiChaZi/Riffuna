@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 
 from PySide6.QtCore import QSize, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
@@ -486,8 +487,14 @@ class MainWindow(QMainWindow):
         self.expanded_player.version_requested.connect(self._current_versions)
         self.expanded_player.set_version_selection_available(True)
         self.expanded_binding = ExpandedPlayerBinding(self.expanded_player, self.playback, artwork=self.artwork)
+        self.playback.track_changed.connect(self._sync_expanded_state)
+        self._sync_expanded_state(self.playback.current)
         self.current_cover.activated.connect(self._open_expanded_player)
         self._refresh_likes()
+
+    def _sync_expanded_state(self, track):
+        self.expanded_player.set_version_selection_available(track is not None)
+        self.expanded_player.set_liked(bool(track and track.video_id in self.library.liked_ids()))
 
     def _open_expanded_player(self):
         if not self.playback.current:
@@ -545,6 +552,11 @@ class MainWindow(QMainWindow):
         dialog.deleteLater()
 
     def _choose_recording(self, original, replacement):
+        from .recording_versions import _matching_title
+        matched = _matching_title(original, replacement)
+        if matched and matched[1]:
+            # The uploader is not the performer credited in the verified title.
+            replacement = replace(replacement, artist=original.artist)
         self.library.prefer_recording(original, replacement)
         self.playback.play(replacement)
         self._notice("Выбрана другая запись: " + replacement.title)

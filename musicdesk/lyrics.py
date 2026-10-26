@@ -55,13 +55,36 @@ def active_line(lines: tuple[LyricLine, ...], position_ms: int) -> int:
 
 
 def _clean(value: str) -> str:
-    value = re.sub(r"\s*-\s*topic\s*$", "", value, flags=re.I)
+    value = re.sub(r"\s*[-–—]\s*topic\s*$", "", value, flags=re.I)
     value = re.sub(r"[\[(](?:official\s+)?(?:audio|lyric video|lyrics|official video)[\])]", "", value, flags=re.I)
     return " ".join(value.split()).strip(" -–—")
 
 
+def _song_title(title: str, artist: str) -> str:
+    original = _clean(title)
+    # Remove upload declarations, never musical processing such as slowed/remix.
+    title = re.sub(r"[\[(]\s*(?:без\s+цензуры|uncensored|explicit|uncut|original(?:\s+version)?|оригинал(?:ьная\s+версия)?)\s*[\])]", "", original, flags=re.I).strip()
+    if artist:
+        title = re.sub(r"^" + re.escape(_clean(artist)) + r"\s+[-–—|]\s+", "", title, flags=re.I)
+        title = re.sub(r"\s+[-–—|]\s+" + re.escape(_clean(artist)) + r"$", "", title, flags=re.I)
+    return title.strip() or original
+
+
+def _well_covered(payload, track):
+    times = [line["start_ms"] for line in payload.get("lines", []) if any(c.isalpha() for c in line.get("text", ""))]
+    return bool(times and track.duration > 0 and .8 * track.duration * 1000 <= max(times) <= track.duration * 1000 + 2000)
+
+
 def _key(value: str) -> str:
-    return " ".join(re.findall(r"\w+", unicodedata.normalize("NFKC", _clean(value)).casefold()))
+    return " ".join(re.findall(r"\w+", unicodedata.normalize("NFKC", _clean(value)).casefold().replace("ё", "е")))
+
+
+def _artist_key(value: str) -> str:
+    # Exact phonetic equivalence only; this is not a fuzzy artist-name guess.
+    table = str.maketrans({"а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ж":"zh","з":"z",
+        "и":"i","й":"y","к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r","с":"s",
+        "т":"t","у":"u","ф":"f","х":"kh","ц":"ts","ч":"ch","ш":"sh","щ":"shch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya"})
+    return _key(value).translate(table)
 
 
 def _editions(value: str) -> frozenset[str]:
@@ -86,20 +109,42 @@ class LyricsUnavailable(RuntimeError):
     pass
 
 
+class _TransientLyricsError(LyricsUnavailable):
+    def __init__(self, message, delay=.3):
+        super().__init__(message)
+        self.delay = delay
+
+
 class LRCLib:
     endpoint = "https://lrclib.net/api"
 
-    def __init__(self, session_factory=requests.Session):
+    def __init__(self, session_factory=requests.Session, sleeper=time.sleep):
         self.session_factory = session_factory
+        self.sleeper = sleeper
 
     def _request(self, session, path, params):
+        # One retry in the worker; never wait for a server-supplied long delay.
+        for attempt in range(2):
+            try:
+                return self._request_once(session, path, params)
+            except (_TransientLyricsError, requests.ConnectionError, requests.Timeout) as error:
+                if attempt:
+                    raise LyricsUnavailable("Сервис текстов временно недоступен. Сохранённый текст можно открыть из кэша.") from None
+                self.sleeper(getattr(error, "delay", .3))
+
+    def _request_once(self, session, path, params):
         with session.get(self.endpoint + path, params=params, stream=True, timeout=(4, 10),
                          headers={"User-Agent": "Riffuna lyrics client (+https://github.com/NikiChaZi/Riffuna)",
                                   "Accept": "application/json"}) as response:
             if response.status_code == 404:
                 return None
-            if response.status_code in (429, 503):
-                raise LyricsUnavailable("Сервис текстов занят. Повтори запрос позже.")
+            if response.status_code in (429, 500, 502, 503, 504):
+                delay = .3
+                try:
+                    delay = max(.1, min(1., float(response.headers.get("Retry-After", .3))))
+                except (TypeError, ValueError):
+                    pass
+                raise _TransientLyricsError("Сервис текстов занят. Повтори запрос позже.", delay)
             if response.status_code != 200:
                 raise LyricsUnavailable("Не удалось получить текст песни.")
             if "json" not in response.headers.get("Content-Type", "").lower():
@@ -115,10 +160,7 @@ class LRCLib:
                 raise LyricsUnavailable("Сервис текстов вернул некорректные данные.") from None
 
     def fetch(self, track: Track) -> dict:
-        title, artist = _clean(track.title), _clean(track.artist)
-        # Some upload titles repeat the artist; version markers are retained.
-        if title.casefold().startswith(artist.casefold() + " - "):
-            title = title[len(artist) + 3:]
+        title, artist = _song_title(track.title, track.artist), _clean(track.artist)
         params = {"track_name": title, "artist_name": artist}
         if 1 <= track.duration <= 3600:
             params["duration"] = track.duration
@@ -127,9 +169,27 @@ class LRCLib:
                 exact = self._request(session, "/get", params)
                 records = [exact] if isinstance(exact, dict) else []
                 match = self._match(track, title, artist, records)
-                if match and match["state"] in ("synced", "instrumental"):
+                if match and (match["state"] == "instrumental" or (match["state"] == "synced" and _well_covered(match, track))):
                     return match
-                found = self._request(session, "/search", {"track_name": title, "artist_name": artist})
+                try:
+                    found = self._request(session, "/search", {"track_name": title, "artist_name": artist})
+                except LyricsUnavailable:
+                    if match:
+                        return match
+                    raise
+                if isinstance(found, list):
+                    records.extend(found[:100])
+                result = self._match(track, title, artist, records)
+                if result and (result["state"] == "instrumental" or (result["state"] == "synced" and _well_covered(result, track))):
+                    return result
+                # Artist metadata may use a different alphabet in YouTube Music.
+                # Search more broadly, then retain the same strict artist/edition gates.
+                try:
+                    found = self._request(session, "/search", {"track_name": title})
+                except LyricsUnavailable:
+                    if result:
+                        return result
+                    raise
                 if isinstance(found, list):
                     records.extend(found[:100])
                 return self._match(track, title, artist, records) or packet(track, "not_found", source="LRCLIB")
@@ -145,8 +205,23 @@ class LRCLib:
                 continue
             if _editions(title) != _editions(row["trackName"]):
                 continue
-            title_score = SequenceMatcher(None, _key(title), _key(row["trackName"])).ratio()
+            candidate_title = _song_title(row["trackName"], row["artistName"])
+            status_title = re.sub(r"\s*[\[(](?:paused|playing|приостановлено)[\])]\s*$", "", candidate_title, flags=re.I).strip()
+            if status_title != candidate_title and _key(status_title) == _key(title):
+                # A leaked player-state suffix is accepted only when the words,
+                # artist and duration corroborate an ordinary matching entry.
+                row_words = _key(row.get("plainLyrics") or " ".join(line.text for line in parse_lrc(row.get("syncedLyrics") or "")))
+                for reference in records:
+                    if not isinstance(reference, dict) or _key(str(reference.get("trackName", ""))) != _key(title) or _artist_key(str(reference.get("artistName", ""))) != _artist_key(artist):
+                        continue
+                    reference_words = _key(reference.get("plainLyrics") or " ".join(line.text for line in parse_lrc(reference.get("syncedLyrics") or "")))
+                    if row_words and reference_words and max(len(row_words.split()), len(reference_words.split())) <= 2000 and SequenceMatcher(None, row_words.split(), reference_words.split(), autojunk=False).ratio() >= .95:
+                        candidate_title = status_title
+                        break
+            title_score = SequenceMatcher(None, _key(title), _key(candidate_title)).ratio()
             artist_score = SequenceMatcher(None, _key(artist), _key(row["artistName"])).ratio()
+            if _artist_key(artist) == _artist_key(row["artistName"]):
+                artist_score = 1.0
             if title_score < .9 or artist_score < .8:
                 continue
             try:
@@ -156,14 +231,16 @@ class LRCLib:
             delta = abs(duration - track.duration) if track.duration > 0 else float("inf")
             timed = parse_lrc(row.get("syncedLyrics") or "") if isinstance(row.get("syncedLyrics"), str) else ()
             meaningful = {line.start_ms for line in timed if line.text}
-            usable_sync = len(meaningful) >= 2
+            usable_sync = len(meaningful) >= 2 and (track.duration <= 0 or max(meaningful) <= track.duration * 1000 + 2000)
+            word_times = [line.start_ms for line in timed if any(c.isalpha() for c in line.text)]
+            weak_coverage = not word_times or track.duration <= 0 or max(word_times) < .8 * track.duration * 1000
             usable = row.get("instrumental") is True or usable_sync or bool(row.get("plainLyrics")) or bool(timed)
             if usable:
-                candidates.append((delta > 2, -title_score - artist_score, not usable_sync, delta, -len(meaningful), row))
+                candidates.append((delta > 2, -title_score - artist_score, not usable_sync, weak_coverage, delta, -len(meaningful), row))
         if not candidates:
             return None
         candidates.sort(key=lambda value: value[:-1])
-        _, _, _, delta, _, row = candidates[0]
+        _, _, _, _, delta, _, row = candidates[0]
         source_url = "https://lrclib.net/"
         if isinstance(row.get("id"), int):
             source_url += "api/get/" + str(row["id"])
@@ -173,7 +250,8 @@ class LRCLib:
         synced = row.get("syncedLyrics") if isinstance(row.get("syncedLyrics"), str) else ""
         plain = row.get("plainLyrics") if isinstance(row.get("plainLyrics"), str) else ""
         lines = parse_lrc(synced)
-        if delta <= 2 and len({line.start_ms for line in lines if line.text}) >= 2:
+        starts = {line.start_ms for line in lines if line.text}
+        if delta <= 2 and len(starts) >= 2 and max(starts) <= track.duration * 1000 + 2000:
             return packet(track, "synced", lines=lines, plain_text=plain or "\n".join(line.text for line in lines),
                           source="LRCLIB", source_url=source_url, timing_source="provider_lrc",
                           match_quality="metadata_duration")
@@ -200,19 +278,33 @@ class LyricsStore:
         if override.is_file():
             return self._local(track, override)
         cache = self.directory / (track.video_id + ".json")
-        if not force and cache.is_file():
+        saved = None
+        if cache.is_file():
             try:
                 if cache.stat().st_size <= MAX_BYTES:
                     record = json.loads(cache.read_text(encoding="utf-8"))
-                    if record["signature"] == self._signature(track) and record["expires"] > self.clock():
+                    if record["signature"] == self._signature(track):
                         result = record["payload"]
                         if result["recording_id"] == track.video_id:
-                            return result
+                            if result.get("state") in {"synced", "plain", "instrumental"}:
+                                saved = result
+                            reviewed = record.get("provider_revision") == 4
+                            if not reviewed and result.get("state") == "synced" and not _well_covered(result, track):
+                                # Keep words offline; do not retain a known-suspicious old clock.
+                                saved = dict(result, state="plain", lines=[], timing_source="none", message="Таймкоды требуют повторной проверки")
+                            valid_negative = reviewed
+                            if not force and valid_negative and record["expires"] > self.clock():
+                                return result
             except (OSError, ValueError, KeyError, TypeError):
                 pass
-        result = self.provider.fetch(track)
+        try:
+            result = self.provider.fetch(track)
+        except (LyricsUnavailable, requests.RequestException):
+            if saved is None:
+                raise
+            return dict(saved, cache_stale=True, message="Сохранённый текст: сервис временно недоступен")
         ttl = 3600 if result["state"] == "not_found" else 30 * 86400
-        record = {"signature": self._signature(track), "expires": self.clock() + ttl, "payload": result}
+        record = {"signature": self._signature(track), "expires": self.clock() + ttl, "payload": result, "provider_revision": 4}
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
             temporary = cache.with_suffix(".json.part")

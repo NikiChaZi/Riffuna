@@ -19,6 +19,7 @@ def test_cover_opens_actual_window_and_import_drives_position_without_replacing_
     assert window.expanded_player.isVisible()
     wait_for(lambda:not window.lyrics_controller._tasks)
     assert window.expanded_player.track==record
+    assert window.expanded_player.version_button.isVisible()
     monkeypatch.setattr(QFileDialog,"getOpenFileName",lambda *args:(str(tmp_path/"words.lrc"),""))
     window.expanded_player.import_requested.emit(record.video_id)
     assert window.expanded_player.lyrics.document.state==LyricsState.SYNCED
@@ -42,3 +43,25 @@ def test_recommendation_page_uses_likes_and_ignores_late_close(make_window,monke
     assert [r.video_id for r in captured]==[record.video_id]
     assert window.stack.currentWidget() is window.recommendation_page
     assert len(window.recommendation_page.rows)==1
+
+
+def test_new_recording_retains_current_like_and_version_action(make_window,monkeypatch):
+    window,_=make_window(lambda *args:[]);record=tracks(1)[0]
+    window.library.like(record,True)
+    monkeypatch.setattr(window.playback,"_open_current",lambda:None)
+    window.playback.play(record);window.playback.track_changed.emit(record)
+    assert not window.expanded_player.version_button.isHidden()
+    assert window.expanded_player.like_button.accessibleName()=="Убрать лайк"
+
+
+def test_explicit_version_choice_preserves_performer_for_lyrics(make_window,monkeypatch):
+    from musicdesk.models import Track
+    from musicdesk.lyrics import _song_title
+    window,_=make_window(lambda *args:[])
+    original=Track("aaaaaaaaaaa","Song","Artist",154)
+    upload=Track("bbbbbbbbbbb","Song – Artist (без цензуры)","Uploader",154)
+    played=[];monkeypatch.setattr(window.playback,"play",played.append)
+    window._choose_recording(original,upload)
+    assert played[0].artist=="Artist"
+    assert _song_title(played[0].title,played[0].artist)=="Song"
+    assert window.library.preferred_recording(original).artist=="Artist"

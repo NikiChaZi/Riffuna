@@ -64,8 +64,12 @@ def _normalize(value: str) -> str:
     return " ".join(re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", value).casefold().replace("ё", "е")))
 
 
+def _display_artist(value: str) -> str:
+    return re.sub(r"\s*[-–—]\s*topic\s*$", "", value, flags=re.I).strip()
+
+
 def _artist(value: str) -> str:
-    return _normalize(re.sub(r"\s*[-–—]\s*topic\s*$", "", value, flags=re.I))
+    return _normalize(_display_artist(value))
 
 
 def _without_declarations(title: str) -> str:
@@ -167,8 +171,40 @@ def _duration_match(reference: Track, candidate: Track, changed: bool) -> bool:
     return 0.85 <= ratio <= 1.15
 
 
+def _matching_title(reference: Track, candidate: Track) -> tuple[str, bool] | None:
+    """Check recording identity, including either explicit credit orientation."""
+    expected = _artist(reference.artist)
+    if (expected in _UNKNOWN_ARTISTS or not 0 < reference.duration <= 1200
+            or _NON_STUDIO.search(reference.title) or _NON_STUDIO.search(candidate.title)):
+        return None
+    composition = _composition_title(_strip_artist_prefix(reference.title, reference.artist))
+    title, credit_in_title = candidate.title, False
+    if _artist_matches(expected, _artist(candidate.artist)):
+        title = _strip_artist_prefix(title, candidate.artist)
+    if not _artist_matches(expected, _artist(candidate.artist)) or not _same_name(composition, _composition_title(title)):
+        parts = re.split(r"\s+[-–—]\s+", candidate.title, maxsplit=1)
+        if len(parts) != 2:
+            return None
+        for credit, song_title in (parts, parts[::-1]):
+            # A delimited performer credit must match exactly; mentioning the
+            # performer somewhere in a sentence cannot establish identity.
+            if _artist(_without_declarations(credit)) != expected:
+                continue
+            title, credit_in_title = song_title, True
+            for pattern, claim in ((_UNCENSORED, "без цензуры"), (_ORIGINAL, "original"), (_CLEAN, "clean")):
+                if _declared(credit, pattern):
+                    title += f" ({claim})"
+            break
+        else:
+            return None
+    if not _same_name(composition, _composition_title(title)):
+        return None
+    changed = _profile(title) != _profile(reference.title)
+    return (title, credit_in_title) if _duration_match(reference, candidate, changed) else None
+
+
 class VersionFinder:
-    """Use at most four filtered searches; never select or play a result."""
+    """Use up to four filtered searches and an optional bounded reference lookup."""
 
     def __init__(self, source: _SearchSource):
         self.source = source
@@ -185,13 +221,15 @@ class VersionFinder:
         composition = _composition_title(cleaned)
         if not composition:
             return []
-        base = f"{re.sub(r'\\s*[-–—]\\s*topic\\s*$', '', track.artist, flags=re.I).strip()} {cleaned}"
+        base = f"{_display_artist(track.artist)} {cleaned}"
         queries = list(dict.fromkeys([base, base + " uncensored", base + " без цензуры", base + " original"]))
         candidate_limit = max(24, min(60, limit * 3))
         matches: dict[str, tuple[tuple, RecordingVersion]] = {}
         failures: list[SourceError] = []
         successful_searches = 0
         reference_profile = _profile(cleaned)
+        candidates: list[tuple[Track, str]] = []
+        lookup = getattr(self.source, "recording_candidates", None)
         for query in queries:
             try:
                 rows = self.source.search(query, limit=candidate_limit, order="relevance")
@@ -199,61 +237,62 @@ class VersionFinder:
             except SourceError as exc:
                 failures.append(exc)
                 log.info("Recording version search unavailable (%s)", type(exc).__name__)
+                if callable(lookup):
+                    # All queries share the same catalog endpoint. On an outage,
+                    # proceed to the independent reference lookup immediately.
+                    break
                 continue
-            for candidate in islice(rows, candidate_limit):
-                if not isinstance(candidate, Track) or candidate.video_id == track.video_id:
-                    continue
-                if _NON_STUDIO.search(candidate.title):
-                    continue
-                title = candidate.title
-                credit_in_title = False
-                if not _artist_matches(artist, _artist(candidate.artist)):
-                    # Accept an explicit 'Expected Artist - Song' credit, not an
-                    # artist's name merely mentioned somewhere in a video title.
-                    parts = re.split(r"\s+[-–—]\s+", title, maxsplit=1)
-                    if len(parts) != 2 or not _artist_matches(artist, _artist(parts[0])):
-                        continue
-                    title, credit_in_title = parts[1], True
-                else:
-                    title = _strip_artist_prefix(title, candidate.artist)
-                if not _same_name(composition, _composition_title(title)):
-                    continue
-                profile = _profile(title)
-                same_processing = profile == reference_profile
-                if not _duration_match(track, candidate, not same_processing):
-                    continue
-                uncensored = _declared(title, _UNCENSORED)
-                original = _declared(title, _ORIGINAL)
-                clean = _declared(title, _CLEAN)
-                claims = []
-                if uncensored:
-                    claims.append("«без цензуры»: заявлено в названии")
-                if original:
-                    claims.append("«оригинал»: заявлено в названии")
-                if clean:
-                    claims.append("цензурированная версия: заявлено в названии")
-                labels = list(profile)
-                if uncensored:
-                    labels.append("«Без цензуры» — заявлено")
-                elif clean:
-                    labels.append("Clean — заявлено")
-                elif original:
-                    labels.append("«Оригинал» — заявлено")
-                label = " · ".join(labels) if labels else "Другая загрузка"
-                delta = abs(candidate.duration - track.duration)
-                evidence = ("Совпадают название и исполнитель; "
-                            + ("исполнитель указан в заголовке; " if credit_in_title else "")
-                            + f"длительность {candidate.duration} с (разница {delta} с). "
-                            + ("; ".join(claims) + ". " if claims else "")
-                            + "Содержание и отсутствие цензуры не проверены.")
-                version = RecordingVersion(candidate, label, evidence)
-                # Same-processing, directly credited matches come first. Title
-                # marketing claims never increase identity/reliability ranking.
-                score = (same_processing, not credit_in_title, -delta)
-                existing = matches.get(candidate.video_id)
-                if existing is None or score > existing[0] or (
-                        score == existing[0] and claims and "заявлено в названии" not in existing[1].evidence):
-                    matches[candidate.video_id] = (score, version)
+            candidates.extend((candidate, "") for candidate in islice(rows, candidate_limit))
+        if callable(lookup):
+            try:
+                uploads = lookup(track, limit=min(limit, 4))
+                candidates.extend((upload.track, upload.evidence) for upload in islice(uploads, 4))
+                successful_searches += 1
+            except SourceError as exc:
+                failures.append(exc)
+                log.info("Reference recording search unavailable (%s)", type(exc).__name__)
+        for candidate, source_evidence in candidates:
+            if not isinstance(candidate, Track) or candidate.video_id == track.video_id:
+                continue
+            identity = _matching_title(track, candidate)
+            if identity is None:
+                continue
+            title, credit_in_title = identity
+            profile = _profile(title)
+            same_processing = profile == reference_profile
+            uncensored = _declared(title, _UNCENSORED)
+            original = _declared(title, _ORIGINAL)
+            clean = _declared(title, _CLEAN)
+            claims = []
+            if uncensored:
+                claims.append("«без цензуры»: заявлено в названии")
+            if original:
+                claims.append("«оригинал»: заявлено в названии")
+            if clean:
+                claims.append("цензурированная версия: заявлено в названии")
+            labels = list(profile)
+            if uncensored:
+                labels.append("«Без цензуры» — заявлено")
+            elif clean:
+                labels.append("Clean — заявлено")
+            elif original:
+                labels.append("«Оригинал» — заявлено")
+            label = " · ".join(labels) if labels else "Другая загрузка"
+            delta = abs(candidate.duration - track.duration)
+            evidence = ("Совпадают название и исполнитель; "
+                        + ("исполнитель указан в заголовке; " if credit_in_title else "")
+                        + f"длительность {candidate.duration} с (разница {delta} с). "
+                        + ("; ".join(claims) + ". " if claims else "")
+                        + (source_evidence + " " if source_evidence else "")
+                        + "Содержание и отсутствие цензуры не проверены.")
+            version = RecordingVersion(candidate, label, evidence)
+            # Same-processing, directly credited matches come first. Title
+            # marketing claims never increase identity/reliability ranking.
+            score = (same_processing, not credit_in_title, -delta)
+            existing = matches.get(candidate.video_id)
+            if existing is None or score > existing[0] or (
+                    score == existing[0] and claims and "заявлено в названии" not in existing[1].evidence):
+                matches[candidate.video_id] = (score, version)
         if not successful_searches and failures:
             raise SourceError("Не удалось найти другие записи: музыкальный источник недоступен.") from failures[-1]
         return [version for _, version in sorted(matches.values(), key=lambda item: item[0], reverse=True)][:limit]

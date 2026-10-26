@@ -537,3 +537,180 @@ def test_short_year_vkfest_recording_is_not_treated_as_studio_audio():
     title = 'Дора — ЁК (05.07.26, @VKfest, Санкт-Петербург)'
     assert YouTubeSource._audio_from_metadata(music_upload_payload(title=title), 'N3472Q6kvg0',
             'Дора ЁК', Track('N3472Q6kvg0', title, 'Fan', 180)) is None
+
+
+# Synthetic storyboard sheets exercise the real decoder and comparison gate,
+# without downloading images or relying on a particular upload's ID.
+def storyboard_info(video_id='00000000002', frame_count=25, rows=3, columns=3):
+    fragments = [{'url': f'https://i.ytimg.com/sb/{video_id}/storyboard/M{i}.jpg'}
+                 for i in range((frame_count + rows * columns - 1) // (rows * columns))]
+    return {'id': video_id, 'duration': 180, 'formats': [{
+        'protocol': 'mhtml', 'width': 120, 'height': 90, 'rows': rows, 'columns': columns,
+        'fps': frame_count / 180, 'fragments': fragments}]}
+
+
+def storyboard_sheet(index, frame_count=25, moving=False, blank=False, rows=3, columns=3):
+    from PySide6.QtCore import QBuffer, QIODevice
+    from PySide6.QtGui import QColor, QImage, QPainter
+    image = QImage(120 * columns, 90 * rows, QImage.Format.Format_RGB32)
+    image.fill(QColor('navy') if blank else QColor('black'))
+    if not blank:
+        painter = QPainter(image)
+        for cell in range(rows * columns):
+            if index * rows * columns + cell >= frame_count:
+                continue  # Unused trailing grid cells are genuinely padding.
+            x, y = (cell % columns) * 120, (cell // columns) * 90
+            painter.fillRect(x + 14, y + 10, 37, 66, QColor('white'))
+            painter.fillRect(x + 57, y + 18, 45, 33, QColor('coral'))
+            if moving and cell == 1:
+                painter.fillRect(x + 10, y + 10, 90, 70, QColor('lime'))
+        painter.end()
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    assert image.save(buffer, 'PNG')
+    return bytes(buffer.data())
+
+
+class StoryboardTransport:
+    def __init__(self, images):
+        self.images, self.calls, self.read_sizes = images, [], []
+    def urlopen(self, url):
+        from io import BytesIO
+        self.calls.append(url)
+        owner = self
+        class Response(BytesIO):
+            def read(self, size=-1):
+                owner.read_sizes.append(size)
+                return super().read(size)
+        index = int(url.rsplit('/M', 1)[1].split('.')[0])
+        return Response(self.images[index])
+
+
+def test_static_nonempty_storyboards_include_all_valid_end_frames_but_skip_padding():
+    info = storyboard_info()
+    transport = StoryboardTransport([storyboard_sheet(i) for i in range(3)])
+    evidence = YouTubeSource._static_storyboard_evidence(transport, info)
+    assert evidence and '25 storyboard-кадрах' in evidence
+    assert 'не проверено' in evidence
+    assert len(transport.calls) == 3
+    assert transport.read_sizes == [2 * 1024 * 1024 + 1] * 3
+
+
+@pytest.mark.parametrize('kind', ['moving', 'blank', 'corrupt', 'oversized', 'wrong_dimensions'])
+def test_storyboards_fail_closed_for_motion_blank_corruption_or_resource_limits(kind):
+    images = [storyboard_sheet(i, moving=(kind == 'moving' and i == 1), blank=(kind == 'blank'))
+              for i in range(3)]
+    if kind == 'corrupt':
+        images[1] = b'not an image'
+    elif kind == 'oversized':
+        images[1] = b'x' * (2 * 1024 * 1024 + 1)
+    elif kind == 'wrong_dimensions':
+        images[1] = storyboard_sheet(0, rows=1, columns=1)
+    assert YouTubeSource._static_storyboard_evidence(StoryboardTransport(images), storyboard_info()) is None
+
+
+def test_long_storyboard_uses_only_first_middle_and_last_sheets():
+    info = storyboard_info(frame_count=88)
+    transport = StoryboardTransport([storyboard_sheet(i, frame_count=88) for i in range(10)])
+    assert YouTubeSource._static_storyboard_evidence(transport, info)
+    assert ['/M0.', '/M5.', '/M9.'] == [url[url.rfind('/M'):url.rfind('/M') + 4] for url in transport.calls]
+
+
+@pytest.mark.parametrize('mutation', ['missing', 'bad_fps', 'too_few_frames', 'foreign_host', 'other_video'])
+def test_storyboard_requires_valid_timing_grid_and_video_bound_urls(mutation):
+    info = storyboard_info()
+    if mutation == 'missing':
+        info['formats'] = []
+    elif mutation == 'bad_fps':
+        info['formats'][0]['fps'] = 0
+    elif mutation == 'too_few_frames':
+        info = storyboard_info(frame_count=5)
+    else:
+        url = 'https://example.com/sb/00000000002/M0.jpg' if mutation == 'foreign_host' else 'https://i.ytimg.com/sb/00000000009/M0.jpg'
+        info['formats'][0]['fragments'][0]['url'] = url
+    transport = StoryboardTransport([])
+    assert YouTubeSource._static_storyboard_evidence(transport, info) is None
+    assert not transport.calls
+
+
+def reference_upload_setup(monkeypatch, *, rows=None, transform=None, visual='25 static frames'):
+    calls = []
+    def raw(index):
+        return {'id': f'{index:011d}', 'title': 'Песня — Артист (без цензуры)',
+                'uploader': 'Upload channel', 'duration': 180}
+    class Extractor:
+        def __init__(self, options):
+            self.options = options
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def extract_info(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if url.startswith('ytsearch'):
+                return {'entries': rows if rows is not None else [raw(2)]}
+            index = int(url.rsplit('=', 1)[1])
+            result = dict(raw(index), live_status='not_live', availability='public',
+                          categories=['People & Blogs'], view_count=123,
+                          formats=[{'acodec': 'aac', 'vcodec': 'none'}])
+            return transform(result) if transform else result
+    monkeypatch.setattr(youtube, 'YoutubeDL', Extractor)
+    monkeypatch.setattr(YouTubeSource, '_static_storyboard_evidence', staticmethod(lambda extractor, info: visual))
+    return calls, raw
+
+
+def test_reference_only_people_and_blogs_preserves_real_category_and_upload_identity(monkeypatch):
+    calls, _ = reference_upload_setup(monkeypatch)
+    result, = YouTubeSource().recording_candidates(Track('00000000001', 'Песня', 'Артист', 180))
+    assert result.track.artist == 'Upload channel'
+    assert result.track.title == 'Песня — Артист (без цензуры)'
+    assert result.track.view_count == 123
+    assert 'People & Blogs' in result.evidence and '25 static frames' in result.evidence
+    assert all(call[1]['download'] is False for call in calls)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('change', [
+    {'id': '00000000009'}, {'title': 'Другая песня — Артист'}, {'duration': 220},
+    {'title': 'Песня — Другой артист'}, {'uploader': 'LIVE archive'},
+    {'title': 'Песня — Артист (reaction)'}, {'live_status': 'was_live'},
+    {'is_live': True}, {'availability': 'subscriber_only'}, {'categories': ['Entertainment']},
+    {'categories': ['Music', 'People & Blogs']}, {'formats': []},
+    {'formats': [{'acodec': 'aac', 'vcodec': 'none', 'has_drm': True}]},
+])
+def test_reference_upload_rechecks_full_metadata_before_visual_gate(monkeypatch, change):
+    reference_upload_setup(monkeypatch, transform=lambda info: dict(info, **change))
+    assert YouTubeSource().recording_candidates(Track('00000000001', 'Песня', 'Артист', 180)) == []
+
+
+def test_reference_upload_never_admits_people_and_blogs_without_visual_evidence(monkeypatch):
+    reference_upload_setup(monkeypatch, visual=None)
+    assert YouTubeSource().recording_candidates(Track('00000000001', 'Песня', 'Артист', 180)) == []
+
+
+def test_reference_lookup_deduplicates_and_caps_full_metadata_checks(monkeypatch):
+    _, raw = reference_upload_setup(monkeypatch)
+    rows = [raw(1), raw(2), raw(2)] + [raw(i) for i in range(3, 100)]
+    calls, _ = reference_upload_setup(monkeypatch, rows=rows, visual=None)
+    assert YouTubeSource().recording_candidates(Track('00000000001', 'Песня', 'Артист', 180)) == []
+    assert len(calls) == 5
+    assert all('00000000001' not in url for url, _ in calls)
+
+
+def test_reference_lookup_does_no_network_for_missing_reference_identity(monkeypatch):
+    monkeypatch.setattr(youtube, 'YoutubeDL', lambda options: pytest.fail('network is forbidden'))
+    source = YouTubeSource()
+    assert source.recording_candidates(Track('00000000001', 'Песня', 'YouTube', 180)) == []
+    assert source.recording_candidates(Track('00000000001', 'Песня', 'Артист', 0)) == []
+    assert source.recording_candidates(Track('00000000001', 'Песня', 'Артист', 180), limit=0) == []
+
+
+@pytest.mark.parametrize('stage', ['metadata', 'storyboard'])
+def test_reference_upload_network_failure_is_reported_as_retryable_not_empty(monkeypatch, stage):
+    def unavailable(*args):
+        raise OSError('network unavailable')
+    reference_upload_setup(monkeypatch, transform=unavailable if stage == 'metadata' else None)
+    if stage == 'storyboard':
+        monkeypatch.setattr(YouTubeSource, '_static_storyboard_evidence', staticmethod(unavailable))
+    with pytest.raises(SourceError, match='Попробуй ещё раз'):
+        YouTubeSource().recording_candidates(Track('00000000001', 'Песня', 'Артист', 180))

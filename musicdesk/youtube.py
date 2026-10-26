@@ -50,6 +50,12 @@ class AudioStream:
     cache_key: str = ""
 
 
+@dataclass(frozen=True)
+class RecordingUpload:
+    track: Track
+    evidence: str
+
+
 def _view_count(value: object) -> int | None:
     # Missing/abbreviated counts are unknown, not zero or a popularity score.
     if isinstance(value, bool):
@@ -348,6 +354,151 @@ class YouTubeSource:
         except Exception as exc:
             log.info("Music upload search unavailable (%s)", type(exc).__name__)
             return []
+
+    def recording_candidates(self, reference: Track, limit: int = 4) -> list[RecordingUpload]:
+        """Reference-only lookup: 16 raw rows, four metadata checks, three sheets.
+
+        Ordinary search/direct URLs retain their Music-only contract. Category
+        and sampled visual evidence are disclosed, never a music/audio guarantee.
+        No media is downloaded and no stream URLs are cached or logged.
+        """
+        from .recording_versions import (_display_artist, _matching_title,
+                                         _strip_artist_prefix, _without_declarations)
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ValueError("limit must be an integer")
+        if limit <= 0 or _matching_title(reference, reference) is None:
+            return []
+        cleaned = _without_declarations(_strip_artist_prefix(reference.title, reference.artist))
+        query = f"{_display_artist(reference.artist)} {cleaned}"
+        try:
+            with YoutubeDL(self._options(extract_flat=True)) as extractor:
+                result = extractor.extract_info(f"ytsearch16:{query}", download=False, process=False)
+                rows = list(islice((result or {}).get("entries") or (), 16))
+        except Exception as exc:
+            raise SourceError("Не удалось проверить другие загрузки YouTube.") from exc
+        candidates, seen = [], {reference.video_id}
+        for row in rows:
+            upload = track_from_extract(row)
+            if (not upload or upload.video_id in seen or _NON_STUDIO.search(upload.artist)
+                    or _matching_title(reference, upload) is None):
+                continue
+            seen.add(upload.video_id)
+            candidates.append(upload)
+        admitted, failures = [], []
+        options = self._options(skip_download=True, extractor_args={
+            "youtube": {"player_client": ["web", "visionos"], "skip": ["hls", "dash"]}})
+        with YoutubeDL(options) as extractor:
+            for upload in candidates[:4]:
+                try:
+                    info = extractor.extract_info(upload.url, download=False)
+                    confirmed = track_from_extract(info)
+                    if (not confirmed or confirmed.video_id != upload.video_id
+                            or info.get("live_status") != "not_live" or info.get("is_live")
+                            or info.get("availability") not in {"public", "unlisted"}
+                            or _NON_STUDIO.search(confirmed.artist)
+                            or _matching_title(reference, confirmed) is None):
+                        continue
+                    categories = info.get("categories") or []
+                    if not isinstance(categories, list) or len(categories) != 1:
+                        continue
+                    category = categories[0]
+                    if category not in {"Music", "People & Blogs"}:
+                        continue
+                    if not any(f.get("acodec") not in {None, "none"} and f.get("vcodec") == "none"
+                               and not f.get("has_drm") for f in info.get("formats") or []):
+                        continue
+                    visual_evidence = self._static_storyboard_evidence(extractor, info)
+                    if visual_evidence:
+                        evidence = f"Категория YouTube: {category}. {visual_evidence}"
+                        admitted.append(RecordingUpload(confirmed, evidence))
+                        if len(admitted) >= min(limit, 4):
+                            break
+                except Exception as exc:
+                    # Extractor exceptions may contain signed URLs: log type only.
+                    failures.append(exc)
+                    log.info("Recording upload check unavailable (%s)", type(exc).__name__)
+        if not admitted and failures:
+            raise SourceError("Не удалось проверить метаданные или кадры других записей. Попробуй ещё раз.") from failures[-1]
+        return admitted
+
+    @staticmethod
+    def _static_storyboard_evidence(extractor, info: dict) -> str | None:
+        """Observe static, nonblank frames; do not infer audio or lyric content."""
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+        from PySide6.QtGui import QImageReader
+        duration, video_id = info.get("duration"), info.get("id")
+        if not isinstance(duration, (int, float)) or not 0 < duration <= 1200:
+            return None
+        sheets = []
+        for fmt in info.get("formats") or []:
+            if fmt.get("protocol") != "mhtml":
+                continue
+            width, height, rows, cols = (fmt.get(k) for k in ("width", "height", "rows", "columns"))
+            if (not all(type(n) is int and n > 0 for n in (width, height, rows, cols))
+                    or not 100 <= width <= 320 or height > 240 or rows * cols > 100
+                    or width * height * rows * cols > 4_000_000):
+                continue
+            fragments, fps = fmt.get("fragments"), fmt.get("fps")
+            if not isinstance(fragments, list) or not fragments or len(fragments) > 200:
+                continue
+            if not isinstance(fps, (int, float)) or not 0 < fps <= 10:
+                continue
+            frame_count = round(duration * fps)
+            if (frame_count < 6 or abs(frame_count - duration * fps) > 0.01
+                    or (frame_count + rows * cols - 1) // (rows * cols) != len(fragments)):
+                continue
+            sheets.append((width, fmt, frame_count))
+        if not sheets:
+            return None
+        _, fmt, frame_count = max(sheets, key=lambda item: item[0])
+        fragments, rows, cols = fmt["fragments"], fmt["rows"], fmt["columns"]
+        indices = sorted({0, len(fragments) // 2, len(fragments) - 1})
+        reference_pixels, observed = None, 0
+        for index in indices:
+            fragment = fragments[index]
+            url = fragment.get("url", "") if isinstance(fragment, dict) else ""
+            parsed = urlparse(url)
+            if (parsed.scheme != "https" or not (parsed.hostname or "").endswith(".ytimg.com")
+                    or not parsed.path.startswith(f"/sb/{video_id}/")):
+                return None
+            with extractor.urlopen(url) as response:
+                data = response.read(2 * 1024 * 1024 + 1)
+            if not data or len(data) > 2 * 1024 * 1024:
+                return None
+            buffer = QBuffer()
+            buffer.setData(QByteArray(data))
+            buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+            reader = QImageReader(buffer)
+            size = reader.size()
+            if size.width() != fmt["width"] * cols or size.height() != fmt["height"] * rows:
+                return None
+            image = reader.read()
+            if image.isNull():
+                return None
+            count = min(rows * cols, frame_count - index * rows * cols)
+            for cell in range(count):
+                tile = image.copy((cell % cols) * fmt["width"], (cell // cols) * fmt["height"],
+                                  fmt["width"], fmt["height"]).scaled(32, 24)
+                pixels = []
+                for y in range(24):
+                    for x in range(32):
+                        color = tile.pixelColor(x, y)
+                        pixels.extend((color.red(), color.green(), color.blue()))
+                gray = [sum(pixels[i:i + 3]) / 3 for i in range(0, len(pixels), 3)]
+                mean = sum(gray) / len(gray)
+                if sum((p - mean) ** 2 for p in gray) / len(gray) < 64:
+                    return None
+                if reference_pixels is None:
+                    reference_pixels = pixels
+                differences = [abs(a - b) for a, b in zip(reference_pixels, pixels)]
+                if (sum(differences) / len(differences) > 3
+                        or sum(d > 24 for d in differences) / len(differences) > 0.02):
+                    return None
+                observed += 1
+        if observed < 6:
+            return None
+        return (f"На {observed} storyboard-кадрах начала, середины и конца — "
+                "статичное непустое изображение. Между выбранными кадрами видео не проверено.")
 
     def _direct_audio(self, video_id: str) -> Track:
         try:
