@@ -189,6 +189,10 @@ class Playback(QObject):
         track = self.current
         if track is None:
             return
+        preferred = self.library.preferred_recording(track)
+        if preferred.video_id != track.video_id:
+            self._current = track = preferred
+            self.library.save_current(track)
         self._token = uuid.uuid4().hex
         token = self._token
         self._expected_url = ""
@@ -219,6 +223,7 @@ class Playback(QObject):
         """Prepare a likely selection and bounded audio read-ahead; never plays it."""
         if self._closing:
             return
+        track = self.library.preferred_recording(track)
         cached = self.relay.cached(track.video_id) or self.streams.peek(track.video_id)
         if cached is not None:
             self.relay.prepare(cached)

@@ -1,15 +1,16 @@
 """Generate Windows file/product version metadata from pyproject.toml."""
 from pathlib import Path
 import tomllib
+import re
 
 
 def main():
     root = Path(__file__).resolve().parents[1]
     version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-    parts = tuple(int(value) for value in version.split("."))
-    if len(parts) != 3:
-        raise ValueError("Expected a three-part release version")
-    windows = parts + (0,)
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\.dev(\d+))?", version)
+    if not match:
+        raise ValueError("Expected x.y.z or x.y.z.devN")
+    windows = tuple(int(value or 0) for value in match.groups())
     fields = {"FileDescription": "Riffuna music player", "FileVersion": version,
               "InternalName": "Riffuna", "OriginalFilename": "Riffuna.exe",
               "ProductName": "Riffuna", "ProductVersion": version}

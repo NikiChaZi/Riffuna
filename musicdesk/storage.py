@@ -241,6 +241,21 @@ class Library:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
 
+    def prefer_recording(self, original: Track, replacement: Track) -> None:
+        # An explicit version choice never rewrites existing likes or history.
+        from .recording_versions import work_key
+        with self.db:
+            self._upsert(original)
+            self._upsert(replacement)
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)",
+                            ("recording:" + work_key(original), replacement.video_id))
+
+    def preferred_recording(self, track: Track) -> Track:
+        from .recording_versions import work_key
+        selected = self.get_setting("recording:" + work_key(track), "")
+        row = self.db.execute("SELECT * FROM tracks WHERE video_id=?", (selected,)).fetchone() if selected else None
+        return self._track(row) if row else track
+
     def close(self):
         self.db.close()
 

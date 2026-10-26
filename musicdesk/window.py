@@ -7,9 +7,17 @@ from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QPushButton, QScrollArea, QInputDialog, QMessageBox,
-    QStackedWidget, QVBoxLayout, QWidget,
+    QStackedWidget, QVBoxLayout, QWidget, QFileDialog,
 )
 
+from .version_dialog import RecordingVersionsDialog
+from .expanded_player import ExpandedPlayer, ExpandableCover
+from .player_view_binding import ExpandedPlayerBinding
+from .motion import MotionPolicy, PageFade
+from .lyrics_controller import LyricsController
+from .recommendations import RecommendationClient, resolve_suggestion
+from .recommendation_page import RecommendationPage
+from . import __version__
 from .appearance import app_icon
 from .branding import APP_NAME
 from .icons import icon
@@ -47,12 +55,20 @@ class MainWindow(QMainWindow):
         self.view = "home"
         self.last_query = ""
         self._shutting_down = False
+        self._recommendation_token = ""
+        self._recommendation_tasks = {}
+        self._recommendation_result = None
+        self._recommendation_client = RecommendationClient()
+        self._recommendation_play_token = ""
+        self._recommendation_resolving = False
+        self._version_dialogs = []
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
         self.setMinimumSize(1000, 650)
         self.resize(1280, 800)
         self._build()
         self._connect()
+        self._build_expanded_player()
         self._refresh_queue()
         self._refresh_likes()
         self._shuffle_changed(self.playback.shuffle)
@@ -94,7 +110,7 @@ class MainWindow(QMainWindow):
         layout.addSpacing(24)
         layout.addWidget(label("ОБЗОР", "eyebrow"))
         self.nav: dict[str, QPushButton] = {}
-        for key, title, glyph in [("home", "Главная", "home"), ("search", "Поиск", "search"),
+        for key, title, glyph in [("home", "Главная", "home"), ("resonance", "Резонанс", "shuffle"), ("search", "Поиск", "search"),
                                    ("likes", "Мне нравится", "heart"), ("playlists", "Плейлисты", "playlist"), ("history", "История", "history")]:
             if key == "likes":
                 layout.addSpacing(18)
@@ -116,7 +132,7 @@ class MainWindow(QMainWindow):
         layout.addSpacing(18)
         layout.addWidget(label("Лайки и история\nхранятся на этом ПК", "tiny"))
         layout.addSpacing(14)
-        layout.addWidget(label("RIFFUNA / WINDOWS", "tiny"))
+        layout.addWidget(label("RIFFUNA / " + __version__, "tiny"))
         return panel
 
     def _content(self) -> QWidget:
@@ -359,7 +375,7 @@ class MainWindow(QMainWindow):
         current_layout = QHBoxLayout(current)
         current_layout.setContentsMargins(0, 0, 0, 0)
         current_layout.setSpacing(12)
-        self.current_cover = Cover(self.artwork, 56)
+        self.current_cover = ExpandableCover(self.artwork, 56)
         current_layout.addWidget(self.current_cover)
         texts = QVBoxLayout()
         texts.setSpacing(4)
@@ -449,6 +465,146 @@ class MainWindow(QMainWindow):
         right.addWidget(self.player_status)
         layout.addLayout(right)
         return bar
+
+    def _build_expanded_player(self):
+        self.recommendation_page = RecommendationPage()
+        self.stack.addWidget(self.recommendation_page)
+        self.recommendation_page.refresh_requested.connect(self._load_recommendations)
+        self.recommendation_page.play_requested.connect(self._play_recommendation)
+        self.recommendation_page.search_requested.connect(self.search_query)
+        self.motion_policy = MotionPolicy(self.library.get_setting("reduced_motion", "0") == "1", self)
+        self.page_fade = PageFade(self.stack, self.motion_policy)
+        self.motion_policy.changed.connect(lambda reduced: self.library.set_setting("reduced_motion", "1" if reduced else "0"))
+        self.lyrics_controller = LyricsController(self.library.path.parent / "lyrics", self)
+        self.expanded_player = ExpandedPlayer(self.centralWidget(), policy=self.motion_policy)
+        self.expanded_player.lyrics_requested.connect(self._request_lyrics)
+        self.expanded_player.import_requested.connect(self._import_lyrics)
+        self.lyrics_controller.changed.connect(self.expanded_player.apply_lyrics_payload)
+        self.expanded_player.like_requested.connect(self._expanded_like)
+        self.expanded_player.output_requested.connect(self._choose_audio_output)
+        self.expanded_player.queue_requested.connect(self._expanded_queue)
+        self.expanded_player.version_requested.connect(self._current_versions)
+        self.expanded_player.set_version_selection_available(True)
+        self.expanded_binding = ExpandedPlayerBinding(self.expanded_player, self.playback, artwork=self.artwork)
+        self.current_cover.activated.connect(self._open_expanded_player)
+        self._refresh_likes()
+
+    def _open_expanded_player(self):
+        if not self.playback.current:
+            return
+        self.expanded_player.open_from(self.current_cover)
+        # Loading is lazy: background playback and UI tests do not request lyrics.
+        self._lyrics_requested_id = self.playback.current.video_id
+        self.lyrics_controller.load(self.playback.current)
+
+    def _request_lyrics(self, recording_id, request_token):
+        track = self.playback.current
+        if track and track.video_id == recording_id and self.expanded_player.isVisible():
+            force = getattr(self, "_lyrics_requested_id", None) == recording_id
+            self._lyrics_requested_id = recording_id
+            self.lyrics_controller.load(track, force=force)
+
+    def _import_lyrics(self, recording_id):
+        track = self.playback.current
+        if not track or track.video_id != recording_id:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Открыть синхронный текст", "", "Синхронный текст (*.lrc)")
+        if path and self.playback.current and self.playback.current.video_id == recording_id:
+            self.lyrics_controller.import_lrc(track, path)
+
+    def _expanded_like(self, recording_id):
+        track = self.playback.current
+        if track and track.video_id == recording_id:
+            self.toggle_like(track)
+
+    def _expanded_queue(self):
+        self.expanded_player.collapse()
+        self.queue_panel.show()
+        self.queue_toggle.setChecked(True)
+        self.queue_list.setFocus()
+
+    def _current_versions(self, recording_id):
+        track = self.playback.current
+        if track and track.video_id == recording_id:
+            self._show_versions(track)
+
+    def _show_versions(self, track):
+        for dialog in self._version_dialogs:
+            if dialog.track.video_id == track.video_id and not dialog._closed:
+                dialog.raise_()
+                return
+        dialog = RecordingVersionsDialog(track, self.source, self)
+        self._version_dialogs.append(dialog)
+        dialog.selected.connect(self._choose_recording)
+        dialog.finished.connect(lambda result: self._forget_version_dialog(dialog))
+        dialog.open()
+
+    def _forget_version_dialog(self, dialog):
+        if dialog in self._version_dialogs:
+            self._version_dialogs.remove(dialog)
+        dialog.deleteLater()
+
+    def _choose_recording(self, original, replacement):
+        self.library.prefer_recording(original, replacement)
+        self.playback.play(replacement)
+        self._notice("Выбрана другая запись: " + replacement.title)
+
+    def _load_recommendations(self):
+        if self._recommendation_tasks or self._shutting_down:
+            return
+        seeds = self.library.liked_tracks()
+        if not seeds:
+            self.recommendation_page.message("Поставь лайки любимым песням: модель использует их как профиль вкуса")
+            return
+        self._recommendation_token = uuid.uuid4().hex
+        token = self._recommendation_token
+        excluded = self.library.history()
+        task = Task(token, lambda: self._recommendation_client.recommend(seeds, excluded))
+        task.signals.finished.connect(self._recommendations_ready)
+        task.signals.failed.connect(self._recommendations_failed)
+        self._recommendation_tasks[token] = task
+        self.recommendation_page.loading()
+        self.pool.start(task)
+
+    def _recommendations_ready(self, token, result):
+        self._recommendation_tasks.pop(token, None)
+        if self._shutting_down or token != self._recommendation_token:
+            return
+        self._recommendation_result = result
+        self.recommendation_page.set_result(result)
+
+    def _recommendations_failed(self, token, message):
+        self._recommendation_tasks.pop(token, None)
+        if not self._shutting_down and token == self._recommendation_token:
+            self.recommendation_page.message(message)
+
+    def _play_recommendation(self, suggestion):
+        if self._recommendation_resolving or self._shutting_down:
+            return
+        self._recommendation_play_token = uuid.uuid4().hex
+        token = self._recommendation_play_token
+        self._recommendation_resolving = True
+        self.recommendation_page.message("Ищем подходящую запись в YouTube…")
+        task = Task(token, lambda: resolve_suggestion(self.source, suggestion))
+        task.signals.finished.connect(self._recommendation_recording_ready)
+        task.signals.failed.connect(self._recommendation_recording_failed)
+        self._recommendation_tasks[token] = task
+        self.pool.start(task)
+
+    def _recommendation_recording_ready(self, token, track):
+        self._recommendation_tasks.pop(token, None)
+        if self._shutting_down or token != self._recommendation_play_token:
+            return
+        self._recommendation_resolving = False
+        self.recommendation_page.message("Запись найдена")
+        self.playback.play(track)
+
+    def _recommendation_recording_failed(self, token, message):
+        self._recommendation_tasks.pop(token, None)
+        if self._shutting_down or token != self._recommendation_play_token:
+            return
+        self._recommendation_resolving = False
+        self.recommendation_page.message(message)
 
     def _audio_output_changed(self):
         selected = self.playback.routing.selected_id
@@ -604,6 +760,10 @@ class MainWindow(QMainWindow):
         if view == "home":
             self._refresh_home()
             self.stack.setCurrentWidget(self.home)
+        elif view == "resonance":
+            self.stack.setCurrentWidget(self.recommendation_page)
+            if self._recommendation_result is None and not self._recommendation_tasks:
+                self._load_recommendations()
         elif view == "playlists":
             self.playlist_page.refresh(self.library.playlists())
             self.stack.setCurrentWidget(self.playlist_page)
@@ -720,6 +880,7 @@ class MainWindow(QMainWindow):
             down.setEnabled(0 <= index < len(records) - 1)
             menu.addAction("Убрать из плейлиста", lambda: self._remove_from_playlist(playlist_context, track))
         menu.addSeparator()
+        menu.addAction("Другие записи…", lambda: self._show_versions(track))
         menu.addAction("Открыть на YouTube", lambda: QDesktopServices.openUrl(QUrl(track.url)))
         return menu
 
@@ -825,6 +986,8 @@ class MainWindow(QMainWindow):
             row.set_liked(row.track.video_id in self.liked)
         liked = self.playback.current is not None and self.playback.current.video_id in self.liked
         self.current_like.setIcon(icon("heart_fill" if liked else "heart", "#FF875F" if liked else "#B2B8AF"))
+        if hasattr(self, "expanded_player"):
+            self.expanded_player.set_liked(liked)
 
     def _repeat_changed(self, mode):
         titles = {"off": "Повтор выключен", "one": "Повтор одного трека", "all": "Повтор всей очереди"}
@@ -930,11 +1093,18 @@ class MainWindow(QMainWindow):
             self.sidebar_panel.setFixedWidth(168 if compact else 192)
             self.queue_panel.setFixedWidth(244 if compact else 272)
             self.current_info.setFixedWidth(240 if compact else 280)
+        if hasattr(self, "expanded_player"):
+            self.expanded_player.setGeometry(self.centralWidget().rect())
 
     def closeEvent(self, event):
         self._shutting_down = True
         self._search_token = uuid.uuid4().hex
         self.pool.clear()
+        for dialog in list(self._version_dialogs):
+            dialog.close()
+        self.page_fade.detach()
+        self.lyrics_controller.shutdown()
+        self.expanded_binding.disconnect()
         self.playback.shutdown()
         self.pool.waitForDone(100)
         super().closeEvent(event)
