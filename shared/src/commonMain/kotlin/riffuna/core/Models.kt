@@ -61,6 +61,7 @@ data class AppState(
     val loading: Boolean = false,
     val playbackLoading: Boolean = false,
     val searchLoading: Boolean = false,
+    val localImporting: Boolean = false,
     val recommendationsLoading: Boolean = false,
     val playing: Boolean = false,
     val queueVisible: Boolean = true,
@@ -110,6 +111,8 @@ data class AppState(
 )
 
 interface RiffunaController {
+    fun importLocalFiles(paths: List<String>)
+
     val state: StateFlow<AppState>
 
     fun refreshRecommendations()
@@ -220,3 +223,8 @@ interface RiffunaController {
 
     fun toggleQueue()
 }
+
+data class LocalImportResult(val imported: Int, val updated: Int = 0, val skipped: Int = 0)
+
+val Track.isLocalFile: Boolean
+    get() = id.startsWith("local-")

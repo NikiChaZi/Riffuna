@@ -21,6 +21,28 @@ class SessionStateTest {
     }
 
     @Test
+    fun localImportRefreshesTheLocalViewWithoutStartingOrEnqueuingMusic() = runTest {
+        val source = SessionSource()
+        val controller = session(source = source)
+        try {
+            controller.importLocalFiles(listOf("fixture.wav"))
+            advanceUntilIdle()
+            assertEquals(LibraryView.LOCAL, controller.state.value.view)
+            assertEquals(source.local, controller.state.value.visibleTracks)
+            assertFalse(controller.state.value.localImporting)
+            assertTrue(controller.state.value.queue.isEmpty())
+            assertNull(controller.state.value.current)
+            controller.showView(LibraryView.LIKES)
+            controller.navigateBack()
+            advanceUntilIdle()
+            assertEquals(source.local, controller.state.value.visibleTracks)
+        } finally {
+            controller.close()
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
     fun selectionFilteringAndNavigationPreserveSavedOrder() = runTest {
         val library = SessionLibrary()
         val a = track('a', "Alpha", "Дора")
@@ -398,6 +420,15 @@ private class SessionAudio : AudioEngine {
 }
 
 private class SessionSource : MusicSource {
+    var local = emptyList<Track>()
+
+    override suspend fun localTracks() = local
+
+    override suspend fun importLocalFiles(paths: List<String>): LocalImportResult {
+        local = listOf(Track("local-fixture", "Local song", "Artist", 180))
+        return LocalImportResult(1)
+    }
+
     var slowQuery = ""
     var slowLyrics = ""
     var resolveDelay = 0L

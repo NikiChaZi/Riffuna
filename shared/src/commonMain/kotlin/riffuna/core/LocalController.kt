@@ -62,6 +62,8 @@ class LocalController(
     private var navigationIndex = 0
     private val preferences = mutableMapOf<String, Pair<String, LocalOrder>>()
     private var selectionAnchor: String? = null
+    private var localLibraryJob: Job? = null
+    private var localImportJob: Job? = null
     private var versionJob: Job? = null
     private var versionGeneration = 0L
     private var toastJob: Job? = null
@@ -181,6 +183,44 @@ class LocalController(
         }
     }
 
+    private fun refreshLocalTracks() {
+        localLibraryJob?.cancel()
+        localLibraryJob =
+            scope.launch {
+                try {
+                    val tracks = withContext(ioDispatcher) { source.localTracks() }
+                    if (state.value.view == LibraryView.LOCAL)
+                        mutable.update { it.copy(visibleTracks = tracks) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    toast("Не удалось прочитать локальную библиотеку")
+                }
+            }
+    }
+
+    override fun importLocalFiles(paths: List<String>) {
+        if (paths.isEmpty() || state.value.localImporting) return
+        showView(LibraryView.LOCAL)
+        mutable.update { it.copy(localImporting = true) }
+        localImportJob =
+            scope.launch {
+                try {
+                    val result = withContext(ioDispatcher) { source.importLocalFiles(paths) }
+                    refreshLocalTracks()
+                    toast(
+                        "Добавлено: ${result.imported}, обновлено: ${result.updated}, пропущено: ${result.skipped}"
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    toast("Не удалось импортировать аудиофайлы")
+                } finally {
+                    mutable.update { it.copy(localImporting = false) }
+                }
+            }
+    }
+
     private fun toast(text: String) {
         toastJob?.cancel()
         mutable.update { it.copy(toast = text) }
@@ -223,6 +263,7 @@ class LocalController(
             )
         }
         selectionAnchor = null
+        if (target.view == LibraryView.LOCAL) refreshLocalTracks()
         if (target.view == LibraryView.RESONANCE && state.value.suggestions.isEmpty())
             recommendations()
     }

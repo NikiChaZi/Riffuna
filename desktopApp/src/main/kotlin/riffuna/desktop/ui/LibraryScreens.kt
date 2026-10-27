@@ -102,6 +102,7 @@ fun Sidebar(
     onNewPlaylist: () -> Unit,
     onSettings: () -> Unit,
     onHelp: () -> Unit,
+    onImportMusic: () -> Unit,
 ) {
     Column(
         Modifier.width(188.dp)
@@ -150,10 +151,16 @@ fun Sidebar(
             listOf(
                     Triple(LibraryView.LIKES, "Мне нравится", Icons.Outlined.FavoriteBorder),
                     Triple(LibraryView.HISTORY, "История", Icons.Outlined.History),
+                    Triple(LibraryView.LOCAL, "Локальные файлы", Icons.Outlined.FolderOpen),
                 )
                 .forEach { (key, title, icon) ->
                     NavigationRow(title, icon, state.view == key) { controller.showView(key) }
                 }
+            TextButton(onClick = onImportMusic, enabled = !state.localImporting) {
+                Icon(Icons.Outlined.FolderOpen, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (state.localImporting) "Читаем файлы…" else "Добавить файлы")
+            }
             Row(
                 Modifier.padding(start = 12.dp, top = 22.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -550,6 +557,7 @@ fun TracksScreen(
                     when (state.view) {
                         LibraryView.LIKES -> "Мне нравится"
                         LibraryView.HISTORY -> "История"
+                        LibraryView.LOCAL -> "Локальные файлы"
                         LibraryView.PLAYLIST -> playlist?.name ?: "Плейлист"
                         else -> "Музыкальные записи"
                     },
@@ -739,7 +747,7 @@ fun TracksScreen(
                         )
                 }
             }
-        if (state.searchLoading && state.view == LibraryView.SEARCH)
+        if (state.localImporting || (state.searchLoading && state.view == LibraryView.SEARCH))
             LinearProgressIndicator(Modifier.fillMaxWidth())
         if (tracks.isEmpty())
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
@@ -753,6 +761,8 @@ fun TracksScreen(
                     else "Здесь пока пусто",
                     if (state.view == LibraryView.LIKES) "Сохраняй любимые треки сердечком"
                     else if (state.view == LibraryView.SEARCH) state.status
+                    else if (state.view == LibraryView.LOCAL)
+                        "Добавь аудиофайлы или папку через «Добавить файлы»"
                     else "Добавляй записи через меню трека",
                     if (
                         state.view == LibraryView.SEARCH &&

@@ -9,9 +9,10 @@ import java.awt.Dimension
 import java.nio.file.Files
 import java.nio.file.Path
 import javax.imageio.ImageIO
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import riffuna.core.LocalController
+import riffuna.core.isLocalFile
 import riffuna.desktop.ui.RiffunaApp
 
 fun main(args: Array<String>) {
@@ -54,10 +55,18 @@ private fun runApp(data: Path) = application {
             System.getProperty("compose.application.resources.dir")
                 ?: System.getProperty("riffuna.home", System.getProperty("user.dir"))
         )
+    val localFiles = remember {
+        LocalFilesSource(
+            data.resolve("local-files.sqlite3"),
+            MpvMetadataReader(home.resolve("vendor/libmpv/libmpv-2.dll"))::read,
+        )
+    }
+    val musicSource = remember { DeviceMusicSource(DesktopSource(home, data), localFiles) }
+    val uiScope = rememberCoroutineScope()
     val controller = remember {
         LocalController(
             SqliteLibrary(data.resolve("library.sqlite3")),
-            DesktopSource(home, data),
+            musicSource,
             MpvAudio(home.resolve("vendor/libmpv/libmpv-2.dll")),
         )
     }
@@ -106,9 +115,41 @@ private fun runApp(data: Path) = application {
         RiffunaApp(
             controller,
             onOpen = { track ->
-                runCatching {
-                    java.awt.Desktop.getDesktop()
-                        .browse(java.net.URI("https://www.youtube.com/watch?v=" + track.id))
+                if (track.isLocalFile)
+                    uiScope.launch {
+                        withContext(Dispatchers.IO) {
+                            runCatching {
+                                java.awt.Desktop.getDesktop()
+                                    .open(
+                                        Path.of(java.net.URI(localFiles.resolve(track).uri))
+                                            .parent
+                                            .toFile()
+                                    )
+                            }
+                        }
+                    }
+                else
+                    runCatching {
+                        java.awt.Desktop.getDesktop()
+                            .browse(java.net.URI("https://www.youtube.com/watch?v=" + track.id))
+                    }
+            },
+            onImportMusic = {
+                val dialog =
+                    javax.swing.JFileChooser().apply {
+                        dialogTitle = "Добавить аудиофайлы или папку"
+                        fileSelectionMode = javax.swing.JFileChooser.FILES_AND_DIRECTORIES
+                        isMultiSelectionEnabled = true
+                        fileFilter =
+                            javax.swing.filechooser.FileNameExtensionFilter(
+                                "Аудиофайлы",
+                                *LocalFilesSource.extensions.toTypedArray(),
+                            )
+                    }
+                if (dialog.showOpenDialog(window) == javax.swing.JFileChooser.APPROVE_OPTION) {
+                    val selected =
+                        dialog.selectedFiles.toList().ifEmpty { listOfNotNull(dialog.selectedFile) }
+                    controller.importLocalFiles(selected.map { it.absolutePath })
                 }
             },
             onImport = {

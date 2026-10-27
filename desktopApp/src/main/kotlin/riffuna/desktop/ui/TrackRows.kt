@@ -225,13 +225,14 @@ fun TrackRow(
                     leadingIcon = { Icon(Icons.Outlined.LibraryMusic, null) },
                 )
                 HorizontalDivider()
-                DropdownMenuItem(
-                    { Text("Другие записи…") },
-                    {
-                        onVersions()
-                        menu = false
-                    },
-                )
+                if (!track.isLocalFile)
+                    DropdownMenuItem(
+                        { Text("Другие записи…") },
+                        {
+                            onVersions()
+                            menu = false
+                        },
+                    )
                 DropdownMenuItem(
                     { Text("Найти исполнителя") },
                     {
@@ -240,7 +241,7 @@ fun TrackRow(
                     },
                 )
                 DropdownMenuItem(
-                    { Text("Открыть на YouTube") },
+                    { Text(if (track.isLocalFile) "Показать файл" else "Открыть на YouTube") },
                     {
                         onOpen()
                         menu = false

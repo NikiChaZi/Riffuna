@@ -24,7 +24,12 @@ import androidx.compose.ui.unit.*
 import riffuna.core.*
 
 @Composable
-fun RiffunaApp(controller: RiffunaController, onOpen: (Track) -> Unit, onImport: () -> Unit) {
+fun RiffunaApp(
+    controller: RiffunaController,
+    onOpen: (Track) -> Unit,
+    onImport: () -> Unit,
+    onImportMusic: () -> Unit = {},
+) {
     val state by controller.state.collectAsState()
     var query by remember { mutableStateOf(state.query) }
     LaunchedEffect(state.query) { query = state.query }
@@ -184,6 +189,7 @@ fun RiffunaApp(controller: RiffunaController, onOpen: (Track) -> Unit, onImport:
                                             settings = true
                                         },
                                         { help = true },
+                                        onImportMusic,
                                     )
                                     Column(Modifier.weight(1f).fillMaxHeight()) {
                                         Row(

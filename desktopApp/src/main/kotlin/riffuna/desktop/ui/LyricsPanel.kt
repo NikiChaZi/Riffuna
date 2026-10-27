@@ -290,7 +290,10 @@ fun ExpandedPlayer(
                 color = RiffunaColors.Secondary,
             )
             state.current?.let { track ->
-                TextButton(onClick = { controller.findVersions(track) }) { Text("Другие записи") }
+                if (!track.isLocalFile)
+                    TextButton(onClick = { controller.findVersions(track) }) {
+                        Text("Другие записи")
+                    }
                 ActionIcon(
                     Icons.Outlined.PlaylistAdd,
                     "Добавить в плейлист",

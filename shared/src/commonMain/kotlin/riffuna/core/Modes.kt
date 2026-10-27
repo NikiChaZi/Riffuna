@@ -2,6 +2,7 @@ package riffuna.core
 
 enum class LibraryView(val key: String) {
     HOME("home"),
+    LOCAL("local"),
     SEARCH("search"),
     RESONANCE("resonance"),
     LIKES("likes"),

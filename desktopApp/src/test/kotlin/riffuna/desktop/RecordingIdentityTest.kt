@@ -49,6 +49,8 @@ class RecordingIdentityTest {
             library.setPreferred(original, null)
             assertEquals(original, library.preferred(original))
             assertEquals(listOf(original, alternate), library.queue().first)
-        } finally { library.close() }
+        } finally {
+            library.close()
+        }
     }
 }

@@ -45,6 +45,11 @@ interface AudioEngine {
 }
 
 interface MusicSource {
+    suspend fun localTracks(): List<Track> = emptyList()
+
+    suspend fun importLocalFiles(paths: List<String>): LocalImportResult =
+        error("Local files unavailable")
+
     suspend fun search(query: String, limit: Int = 40): List<Track>
 
     suspend fun searchSorted(query: String, limit: Int, order: SearchOrder): List<Track> =
