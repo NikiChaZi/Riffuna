@@ -4,8 +4,6 @@ import ai.onnxruntime.*
 import java.io.DataInputStream
 import java.nio.FloatBuffer
 import java.nio.file.*
-import java.text.Normalizer
-import java.util.Locale
 import java.util.PriorityQueue
 import kotlin.math.*
 import kotlinx.serialization.json.*
@@ -274,17 +272,7 @@ class MusicModel(
     }
 
     companion object {
-        internal fun normal(text: String) =
-            Regex("[^\\p{L}\\p{N}]+")
-                .replace(
-                    Normalizer.normalize(text, Normalizer.Form.NFKC)
-                        .lowercase(Locale.ROOT)
-                        .replace("ё", "е")
-                        .replace("ß", "ss")
-                        .replace("ς", "σ"),
-                    " ",
-                )
-                .trim()
+        internal fun normal(text: String) = MusicText.normalized(text)
 
         internal fun bucket(text: String): Int {
             val bytes = text.toByteArray(Charsets.UTF_8)
@@ -295,31 +283,6 @@ class MusicModel(
             return output[0].toInt() and 127
         }
 
-        private fun similarity(a: String, b: String): Double {
-            if (a == b) return 1.0
-            if (a.isEmpty() || b.isEmpty()) return 0.0
-            fun matches(a0: Int, a1: Int, b0: Int, b1: Int): Int {
-                var best = 0
-                var ai = a0
-                var bi = b0
-                var prev = IntArray(b1 - b0 + 1)
-                for (i in a0 until a1) {
-                    val next = IntArray(b1 - b0 + 1)
-                    for (j in b0 until b1) if (a[i] == b[j]) {
-                        val n = prev[j - b0] + 1
-                        next[j - b0 + 1] = n
-                        if (n > best) {
-                            best = n
-                            ai = i - n + 1
-                            bi = j - n + 1
-                        }
-                    }
-                    prev = next
-                }
-                return if (best == 0) 0
-                else best + matches(a0, ai, b0, bi) + matches(ai + best, a1, bi + best, b1)
-            }
-            return 2.0 * matches(0, a.length, 0, b.length) / (a.length + b.length)
-        }
+        private fun similarity(a: String, b: String): Double = TextMatch.ratio(a, b)
     }
 }

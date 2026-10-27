@@ -14,7 +14,7 @@ class ArtistTags(private val directory: Path) {
         val now = System.currentTimeMillis() / 1000
         val key =
             MessageDigest.getInstance("SHA-256")
-                .digest(MusicModel.normal(artist).toByteArray())
+                .digest(MusicText.normalized(artist).toByteArray())
                 .joinToString("") { "%02x".format(it) }
         val file = directory.resolve("$key.json")
         runCatching {

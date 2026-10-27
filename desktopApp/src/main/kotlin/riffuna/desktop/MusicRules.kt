@@ -44,7 +44,7 @@ object MusicRules {
             )
             .map { it.first to Regex("(?U)" + it.second, RegexOption.IGNORE_CASE) }
 
-    fun normal(value: String) = MusicModel.normal(value)
+    fun normal(value: String) = MusicText.normalized(value)
 
     fun artist(value: String) =
         normal(Regex("\\s*[-–—]\\s*topic\\s*$", RegexOption.IGNORE_CASE).replace(value, ""))
@@ -121,52 +121,14 @@ object MusicRules {
         return result
     }
 
-    private val annotation = Regex("""\(([^()]*)\)|\[([^\[\]]*)\]""")
-    private val declarations =
-        Regex(
-            """^(?:official\s+audio|audio|official|lyrics?|hd|hq|4k|аудио|официальное\s+аудио|uncensored|uncut|explicit|без\s+цензуры|нецензурная\s+версия|original(?:\s+version)?|оригинал(?:ьная\s+версия)?|clean(?:\s+version)?|censored|цензурированная\s+версия)$""",
-            RegexOption.IGNORE_CASE,
-        )
-    private val suffix =
-        Regex(
-            """(?:\s*[-–—|:]\s*|\s+)(?:official\s+audio|официальное\s+аудио|uncensored|uncut|explicit|без\s+цензуры|original\s+version|original|оригинальная\s+версия|оригинал|clean\s+version|clean|censored)\s*$""",
-            RegexOption.IGNORE_CASE,
-        )
+    fun withoutDeclarations(title: String): String = RecordingIdentity.withoutDeclarations(title)
 
-    fun withoutDeclarations(title: String): String {
-        var result =
-            annotation.replace(title) { m ->
-                val text = m.groupValues[1].ifEmpty { m.groupValues[2] }
-                if (
-                    declarations.matches(
-                        Regex("\\b(?:19|20)\\d{2}\\b")
-                            .replace(text, "")
-                            .trim(' ', ',', '–', '—', '-', '|')
-                    )
-                )
-                    " "
-                else m.value
-            }
-        while (true) {
-            val shortened = suffix.replace(result, "").trim()
-            if (shortened.isEmpty() || shortened == result) return result.trim()
-            result = shortened
-        }
-    }
-
-    fun songTitle(title: String, performer: String): String {
-        var result = withoutDeclarations(title)
-        val pieces = result.split(Regex("\\s+[-–—|]\\s+"), 2)
-        if (pieces.size == 2) {
-            if (artist(pieces[0]) == artist(performer)) result = pieces[1]
-            else if (artist(pieces[1]) == artist(performer)) result = pieces[0]
-        }
-        return result.trim()
-    }
+    fun songTitle(title: String, performer: String): String =
+        RecordingIdentity.songTitle(title, performer)
 
     fun composition(title: String): String {
         var result =
-            annotation.replace(withoutDeclarations(title)) { m ->
+            RecordingIdentity.annotations.replace(withoutDeclarations(title)) { m ->
                 val text = m.groupValues[1].ifEmpty { m.groupValues[2] }
                 if (profile(text).isNotEmpty() || Regex("\\s*(?:19|20)\\d{2}\\s*").matches(text))
                     " "
@@ -226,8 +188,7 @@ object MusicRules {
             }
     }
 
-    fun workKey(track: Track) =
-        "recording:${artist(track.artist)}::${normal(songTitle(track.title,track.artist))}"
+    fun workKey(track: Track) = RecordingIdentity.key(track)
 
     fun track(row: JsonObject): Track? =
         runCatching {

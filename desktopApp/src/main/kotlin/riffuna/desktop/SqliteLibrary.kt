@@ -272,71 +272,10 @@ class SqliteLibrary(val path: Path) : MusicLibrary {
         update("INSERT OR REPLACE INTO settings VALUES(?,?)", name, value)
     }
 
-    private fun normalized(value: String) =
-        Regex("[^\\p{L}\\p{N}_]+")
-            .replace(
-                java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC)
-                    .lowercase(java.util.Locale.ROOT)
-                    .replace("ё", "е")
-                    .replace("ß", "ss"),
-                " ",
-            )
-            .trim()
-
     @Synchronized
     override fun preferred(track: Track): Track {
-        val artist =
-            Regex("\\s*[-–—]\\s*topic\\s*$", RegexOption.IGNORE_CASE)
-                .replace(track.artist, "")
-                .trim()
-        var title =
-            Regex("^" + Regex.escape(artist) + "\\s+[-–—]\\s+", RegexOption.IGNORE_CASE)
-                .replace(track.title, "")
-        title =
-            Regex("""\(([^()]*)\)|\[([^\[\]]*)\]""").replace(title) { match ->
-                val declaration = match.groupValues[1].ifEmpty { match.groupValues[2] }
-                val annotation =
-                    Regex("\\b(?:19|20)\\d{2}\\b").replace(declaration, "").trim().lowercase()
-                if (
-                    annotation in
-                        setOf(
-                            "official audio",
-                            "audio",
-                            "official",
-                            "lyrics",
-                            "lyric",
-                            "hd",
-                            "hq",
-                            "4k",
-                            "аудио",
-                            "официальное аудио",
-                            "uncensored",
-                            "uncut",
-                            "explicit",
-                            "без цензуры",
-                            "original",
-                            "original version",
-                            "оригинал",
-                            "оригинальная версия",
-                            "clean",
-                            "clean version",
-                            "censored",
-                        )
-                )
-                    " "
-                else match.value
-            }
-        title =
-            Regex(
-                    "(?:\\s*[-–—|:]\\s*|\\s+)(?:official audio|официальное аудио|uncensored|uncut|explicit|без цензуры|original version|original|оригинальная версия|оригинал|clean version|clean|censored)\\s*$",
-                    RegexOption.IGNORE_CASE,
-                )
-                .replace(title, "")
         val selected =
-            setting(
-                MusicRules.workKey(track),
-                setting("recording:" + normalized(artist) + "::" + normalized(title), ""),
-            )
+            setting(RecordingIdentity.key(track), setting(RecordingIdentity.legacyKey(track), ""))
         return if (selected.isBlank()) track
         else rows("SELECT * FROM tracks WHERE video_id=?", selected).firstOrNull() ?: track
     }
