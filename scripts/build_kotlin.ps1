@@ -15,7 +15,7 @@ try {
     }
     $taskNode=(Get-Command node.exe -ErrorAction Stop).Source
     $taskNodeVersion=(& $taskNode --version).Trim()
-    if([version]$taskNodeVersion.TrimStart('v') -lt [version]'24.5.0'){throw 'Node.js 24.5 or newer is required on the build machine.'}
+    if([version]$taskNodeVersion.TrimStart('v') -lt [version]'24.15.0'){throw 'Node.js 24.15 or newer is required on the build machine.'}
     $taskLockHash=(Get-FileHash -LiteralPath source-runtime/package-lock.json -Algorithm SHA256).Hash
     $taskLockStamp=Join-Path $taskRoot 'source-runtime\node_modules\.riffuna-lock-sha256'
     $taskInstalledHash=if(Test-Path -LiteralPath $taskLockStamp){(Get-Content -LiteralPath $taskLockStamp -Raw).Trim()}else{''}
@@ -34,7 +34,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $taskResources 'assets'),(Join-Path $taskResources 'vendor\node'),(Join-Path $taskResources 'vendor\libmpv'),(Join-Path $taskResources 'source-runtime'),(Join-Path $taskResources 'LICENSES')|Out-Null
     Copy-Item -Path assets/riffuna.* -Destination (Join-Path $taskResources 'assets') -Force
     Copy-Item -LiteralPath $taskNode -Destination (Join-Path $taskResources 'vendor\node\node.exe') -Force
-    Copy-Item -Path source-runtime/index.mjs,source-runtime/package.json,source-runtime/package-lock.json,source-runtime/node_modules -Destination (Join-Path $taskResources 'source-runtime') -Recurse -Force
+    Copy-Item -Path source-runtime/index.mjs,source-runtime/attestation.mjs,source-runtime/attestation-core.mjs,source-runtime/package.json,source-runtime/package-lock.json,source-runtime/node_modules -Destination (Join-Path $taskResources 'source-runtime') -Recurse -Force
     Copy-Item -LiteralPath vendor/libmpv/libmpv-2.dll,vendor/libmpv/LICENSE.LGPL,vendor/libmpv/BUILD-MANIFEST.json -Destination (Join-Path $taskResources 'vendor\libmpv') -Force
     Copy-Item -Path LICENSES/* -Destination (Join-Path $taskResources 'LICENSES') -Force
     Copy-Item -LiteralPath LICENSE,LICENSING.md,THIRD_PARTY_NOTICES.md -Destination $taskResources -Force

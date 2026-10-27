@@ -132,6 +132,19 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
     private val audioWorker = Worker()
     private val prefetchWorker = Worker()
     private val rangeWorker = Worker()
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val warming = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun warmPlayback() {
+        if (!warming.compareAndSet(false, true)) return
+        backgroundScope.launch {
+            runCatching {
+                    audioWorker.execute(buildJsonObject { put("action", "prepare_playback") })
+                }
+                .onFailure { warming.set(false) }
+        }
+    }
+
     private val rangeLock = kotlinx.coroutines.sync.Mutex()
     private var rangeReady = false
 
@@ -178,6 +191,7 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
     }
 
     override fun close() {
+        backgroundScope.cancel()
         if (model.isInitialized()) model.value.close()
         transport.close()
         searchWorker.close()
@@ -193,6 +207,7 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
         val input = query.trim()
         if (input.isEmpty() || limit <= 0) return emptyList()
         require(input.length <= 500)
+        warmPlayback()
         if (input.startsWith("http://") || input.startsWith("https://")) {
             val uri = java.net.URI(input)
             require(

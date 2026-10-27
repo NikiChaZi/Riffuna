@@ -11,3 +11,5 @@
 gradlew text eol=lf
 # Preserve the complete upstream notice verbatim.
 LICENSES/Node-v24.15.0-LICENSE.txt -text -whitespace
+# Generated browser assets are hashed byte-for-byte; preserve upstream bytes.
+android/app/src/main/assets/source/** -text -whitespace

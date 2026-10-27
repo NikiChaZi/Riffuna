@@ -32,3 +32,8 @@ Third-party LGPL rights remain independent of Riffuna's own license, including
 modification/replacement of these libraries and reverse engineering for debugging
 such modifications. See the replacement path and source references in
 `LICENSES/libmpv-SOURCES.md`.
+
+
+## Playback attestation
+
+The local source component includes bgutils-js 4.0.3 and jsdom 30.1.3, both under the MIT license. Their complete notices and the notices of their transitive dependencies are retained in `source-runtime/node_modules`. Anonymous content-bound playback tokens remain in memory; account cookies are not imported or persisted. The Android source component includes the browser-compatible bgutils-js modules and their MIT notice; jsdom is used only by the Windows Node.js component.

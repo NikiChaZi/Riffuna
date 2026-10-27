@@ -31,7 +31,7 @@
 
 Модули: `shared` — общее ядро, `desktopApp` — Compose UI и платформенные реализации, `source-runtime` — закреплённые YouTube.js и Undici для запросов YouTube, прямого аудио и JavaScript-задач проигрывателя. HTTPS-аудио и проверка ссылки используют один транспорт; Kotlin получает диапазоны по локальному каналу с ключом процесса и сохраняет буфер/кэш. Python и Qt в поставку не включаются. Python остаётся инструментом обучения/экспорта моделей. Прежняя Qt-реализация сохранена в теге `v0.2.0` и ветке `legacy-qt`; в активном дереве её нет.
 
-Нужны JDK 21, Node.js 24.5+ на машине разработчика, подготовленный libmpv и экспортированные музыкальные модели. Gradle Wrapper закреплён с SHA256; зависимости YouTube закреплены `package-lock.json`.
+Нужны JDK 21, Node.js 24.15+ на машине разработчика, подготовленный libmpv и экспортированные музыкальные модели. Gradle Wrapper закреплён с SHA256; зависимости YouTube закреплены `package-lock.json`.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_kotlin.ps1 -LiveTest
@@ -44,7 +44,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_kotlin.ps1
 
 ## Android
 
-Сейчас проверяется Windows-версия. Общее ядро и интерфейсы источника, библиотеки и аудиодвижка подготовлены для следующей платформы. Android-цель и Media3 ещё не подключены; APK пока не выпускается.
+Начат Android MVP: портретный Compose UI, общее Kotlin-ядро, Media3, локальная SQLite, поиск, очередь, лайки, история, плейлисты и импорт файлов. Проверочная APK-сборка прошла тесты в BlueStacks; это ещё не стабильный Android-релиз. «Резонанс» и расширенный поиск альтернатив пока остаются в Windows. [Сборка, проверки и ограничения Android](docs/android-mvp.md).
 
 ## Лицензия
 

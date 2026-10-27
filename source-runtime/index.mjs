@@ -1,5 +1,7 @@
 import { Innertube, UniversalCache, Player, Constants, Platform, Log } from 'youtubei.js';
 import vm from 'node:vm';
+import {createPlaybackTokenProvider} from './attestation.mjs';
+import {PLAYBACK_USER_AGENT} from './attestation-core.mjs';
 import readline from 'node:readline';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -26,6 +28,7 @@ const boundedFetch=async(input,init={})=>{
  try{const response=await fetchNative(input,{...init,headers,...(selectedDispatcher?{dispatcher:selectedDispatcher}:{}),signal:AbortSignal.any([...(init.signal?[init.signal]:[]),AbortSignal.timeout(18000)])});trace({phase,status:response.status});return response;}
  catch(error){trace({phase,type:error.name,cause:error.cause?.code||'',proxy_endpoint:!!proxyUri&&String(error.cause?.message||'').includes(new URL(proxyUri).host),main_youtube:url.hostname==='www.youtube.com',music_youtube:url.hostname==='music.youtube.com'});throw error;}
 };
+const mintPlaybackToken=createPlaybackTokenProvider(boundedFetch);
 let bridgeServer;let bridgeAddress;const bridgeToken='/'+randomUUID();const bridgeAgents=new Map();
 function bridgeAgent(proxy){
  if(!bridgeAgents.has(proxy))bridgeAgents.set(proxy,proxy?new ProxyAgent({uri:proxy,connections:4,connectTimeout:10000}):new Agent({connections:4,connectTimeout:10000}));
@@ -127,12 +130,30 @@ async function resolve(id){
  };
  const validate=async(url,client)=>{
   const parsed=new URL(url);if(parsed.protocol!=='https:'||!(parsed.hostname==='googlevideo.com'||parsed.hostname.endsWith('.googlevideo.com')))return null;
-  const headers={'User-Agent':Constants.CLIENTS[client]?.USER_AGENT||'Mozilla/5.0','Accept':'*/*','Accept-Encoding':'identity'};
+  const headers={'User-Agent':Constants.CLIENTS[client]?.USER_AGENT||PLAYBACK_USER_AGENT,'Accept':'*/*','Accept-Encoding':'identity'};
   const response=await boundedFetch(url,{headers:{...headers,Range:'bytes=0-1023'}});await response.body?.cancel();
   if(response.status!==206)return null;
+  const size=Number(parsed.searchParams.get('clen'));
+  // Tiny probes can succeed on a preview-capped link. Verify a real range at the end too.
+  if(Number.isSafeInteger(size)&&size>131072){
+   const tailStart=Math.max(0,size-131072);
+   const tail=await boundedFetch(url,{headers:{...headers,Range:'bytes='+tailStart+'-'+(size-1)}});
+   const valid=tail.status===206&&tail.headers.get('content-range')==='bytes '+tailStart+'-'+(size-1)+'/'+size;
+   if(!valid){await tail.body?.cancel();return null;}
+   if((await tail.arrayBuffer()).byteLength!==size-tailStart)return null;
+  }
   trace({phase:'audio-ready',client});
   return {uri:url,headers,client};
  };
+ // Web playback uses a content-bound attestation token; native-client preview links are insufficient.
+ try{
+  const [,token]=await Promise.all([ensurePlayer(api),mintPlaybackToken(id)]);
+  const value=await api.getBasicInfo(id,{client:'YTMUSIC'});
+  if(value.basic_info.id===id)for(const format of formatsFor(value)){
+   const url=new URL(await format.decipher(api.session.player));url.searchParams.set('pot',token);
+   const stream=await validate(url.href,'YTMUSIC');if(stream)return stream;
+  }
+ }catch(error){trace({phase:'attested-client-error',type:error.name});}
  for(const client of ['VISIONOS','IOS','ANDROID_VR']){
   try{
    const value=await api.getBasicInfo(id,{client});if(value.basic_info.id!==id)continue;
@@ -141,7 +162,7 @@ async function resolve(id){
   }catch(error){trace({phase:'direct-client-error',client,type:error.name});}
  }
  await ensurePlayer(api);
- for(const client of ['VISIONOS','IOS','ANDROID_VR','TV_SIMPLY','WEB']){
+ for(const client of ['VISIONOS','WEB_EMBEDDED','IOS','ANDROID_VR','TV_SIMPLY','WEB']){
   try{
    const value=await api.getBasicInfo(id,{client});if(value.basic_info.id!==id)continue;
    for(const format of formatsFor(value)){const stream=await validate(await format.decipher(api.session.player),client);if(stream)return stream;}
@@ -152,6 +173,7 @@ async function resolve(id){
 async function execute(request){
  switch(request.action){
  case 'range_bridge':return {uri:await rangeBridge()};
+ case 'prepare_playback':{const api=await yt();await Promise.all([ensurePlayer(api),mintPlaybackToken.prepare()]);return {ready:true};}
  case 'capabilities':return {qt_loaded:false,python:false,protocol:2,provider:'youtubei.js',version:'18.3.0'};
  case 'search':return musicSearch(String(request.query||''),Math.min(180,Math.max(1,request.limit||80)));
  case 'videos':return videoSearch(String(request.query||''));
