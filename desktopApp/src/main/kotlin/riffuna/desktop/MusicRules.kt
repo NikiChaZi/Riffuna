@@ -256,8 +256,9 @@ object MusicRules {
         val track = track(row) ?: return null
         return track.takeIf {
             it.duration in 1..1200 &&
-                !excluded.containsMatchIn(
-                    it.title + " " + (row["album"]?.jsonPrimitive?.content ?: "")
+                !CatalogPresentation.excludes(
+                    it.title,
+                    row["album"]?.jsonPrimitive?.content.orEmpty(),
                 ) &&
                 score(query, it.title, it.artist) >= 0
         }
