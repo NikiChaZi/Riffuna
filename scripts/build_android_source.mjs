@@ -32,8 +32,9 @@ const manifest={youtubejs_version:'18.3.0',upstream:'https://github.com/LuanRT/Y
 outputs['BUILD-MANIFEST.json']=Buffer.from(JSON.stringify(manifest,null,2)+'\n');
 const directory=path.join(root,'android/app/src/main/assets/source');
 for(const [name,data] of Object.entries(outputs)){
+ if(process.argv.includes('--restore-vendor')&&name!=='youtubei.js'&&!name.startsWith('bgutils/'))continue;
  const target=path.join(directory,name);
  if(process.argv.includes('--check')){if(!fs.existsSync(target)||!fs.readFileSync(target).equals(data))throw Error('Regenerate Android source: '+name);}
  else {fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,data);}
 }
-console.log(process.argv.includes('--check')?'Android source verified':'Android source generated');
+console.log(process.argv.includes('--check')?'Android source verified':process.argv.includes('--restore-vendor')?'Pinned Android vendor files restored':'Android source generated');

@@ -22,6 +22,9 @@ Android собирается отдельно в `android/`, чтобы для W
 
 ```powershell
 $env:ANDROID_HOME = 'PATH_TO_ANDROID_SDK'
+npm ci --prefix source-runtime --ignore-scripts
+node scripts/build_android_source.mjs --restore-vendor
+node scripts/build_android_source.mjs --check
 .\gradlew.bat -p android spotlessCheck :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 ```
 

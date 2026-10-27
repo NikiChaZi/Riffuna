@@ -18,6 +18,8 @@ dist-next/
 *.sqlite3-shm
 *.pem
 *.key
+*.jks
+*.keystore
 
 vendor/libmpv/
 
@@ -39,3 +41,7 @@ source-runtime/probe.mjs
 /Riffuna.runtime/
 /Riffuna.runtime.next/
 /Riffuna.exe.next
+
+# Generated from integrity-pinned npm packages, never edited as application source.
+/android/app/src/main/assets/source/youtubei.js
+/android/app/src/main/assets/source/bgutils/
