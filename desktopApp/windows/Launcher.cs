@@ -5,8 +5,8 @@ using System.Reflection;
 using System.Windows.Forms;
 [assembly: AssemblyTitle("Riffuna")]
 [assembly: AssemblyProduct("Riffuna")]
-[assembly: AssemblyVersion("0.2.0.0")]
-[assembly: AssemblyFileVersion("0.2.0.0")]
+[assembly: AssemblyVersion("0.2.1.0")]
+[assembly: AssemblyFileVersion("0.2.1.0")]
 internal static class Launcher {
     [STAThread]
     private static int Main() {

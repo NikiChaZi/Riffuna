@@ -62,7 +62,7 @@ object DesktopNetwork {
             connectTimeout = 5000
             readTimeout = 10000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "Riffuna/0.2.0")
+            setRequestProperty("User-Agent", "Riffuna/0.2.1")
             setRequestProperty("Accept-Encoding", "identity")
         }
     }

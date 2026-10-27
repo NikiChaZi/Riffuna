@@ -1,6 +1,6 @@
-# Riffuna 0.2.0
+# Riffuna 0.2.1
 
-Локальный музыкальный плеер для Windows на Kotlin и Compose Multiplatform. Поиск и воспроизведение — YouTube; библиотека, аудиокэш и музыкальные рекомендации работают на устройстве. Удалённый сервер для обычного использования не нужен.
+Локальный музыкальный плеер для Windows на Kotlin и Compose Multiplatform. Источники музыки — YouTube и локальные аудиофайлы; библиотека, аудиокэш и музыкальные рекомендации работают на устройстве. Удалённый сервер для обычного использования не нужен.
 
 ## Запуск
 
@@ -8,7 +8,7 @@
 
 Лайки, история, плейлисты, очередь, настройки, выбранные записи и кэш находятся в **`%USERPROFILE%\.riffuna`**. Запуск из другой папки не создаёт другую библиотеку. Один экземпляр приложения работает с одной библиотекой; путь и блокировка совместимы с предыдущей версией.
 
-Актуальный выпуск — **[Riffuna 0.2.0](https://github.com/NikiChaZi/Riffuna/releases/tag/v0.2.0)**. Скачай `Riffuna-0.2.0-windows-x64.zip`, распакуй целиком в отдельную папку и открой `Riffuna.exe`. Папка `Riffuna.runtime` должна оставаться рядом. При переходе с Qt прежняя библиотека подхватывается автоматически; удалять `%USERPROFILE%\.riffuna` не нужно.
+Актуальный выпуск — **[Riffuna 0.2.1](https://github.com/NikiChaZi/Riffuna/releases/tag/v0.2.1)**. Скачай `Riffuna-0.2.1-windows-x64.zip`, распакуй целиком в отдельную папку и открой `Riffuna.exe`. Папка `Riffuna.runtime` должна оставаться рядом. При переходе с Qt прежняя библиотека подхватывается автоматически; удалять `%USERPROFILE%\.riffuna` не нужно.
 
 ## Возможности
 
@@ -38,7 +38,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_kotlin.ps1 -Li
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_kotlin.ps1
 ```
 
-Сборка появляется в `dist/Riffuna-0.2.0`. Скрипт установки сохраняет прежний EXE в `.test-data/before-native-kotlin` и не переносит пользовательскую базу данных.
+Сборка появляется в `dist/Riffuna-0.2.1`. Скрипт установки сохраняет прежний EXE в `.test-data/before-native-kotlin` и не переносит пользовательскую базу данных.
 
 [Архитектура, проверки и границы переноса](docs/kotlin-migration.md). [Обучение музыкальных моделей](docs/music-recsys.md).
 
@@ -52,4 +52,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_kotlin.ps1
 
 ## Проверки изменений
 
-`gradlew.bat spotlessCheck :shared:jvmTest :desktopApp:test` проверяет форматирование и Kotlin-код. GitHub Actions выполняет эти проверки на Windows, включая беззвучный нативный аудиовывод; сетевые проверки YouTube включаются отдельно. Проверка паритета обученной модели требует локально подготовленных артефактов. Python-тесты ML запускаются отдельно: `uv run --extra dev pytest`.
+`gradlew.bat spotlessCheck :shared:jvmTest :desktopApp:test` проверяет форматирование и Kotlin-код. GitHub Actions выполняет эти проверки на Windows, включая беззвучный нативный аудиовывод; сетевые проверки YouTube включаются отдельно. Проверка паритета обученной модели требует локально подготовленных артефактов. Python-тесты ML запускаются отдельно: `uv run --extra dev --extra evaluation pytest`.

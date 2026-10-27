@@ -42,7 +42,7 @@ class ArtistTags(private val directory: Path) {
                         connection.readTimeout = 6000
                         connection.setRequestProperty(
                             "User-Agent",
-                            "Riffuna/0.2.0 (music metadata)",
+                            "Riffuna/0.2.1 (music metadata)",
                         )
                         check(connection.responseCode == 200)
                         val target = connection.url.toURI()

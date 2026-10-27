@@ -36,7 +36,7 @@ compose.desktop {
                 rootProject.layout.projectDirectory.dir("build/desktop-resources")
             )
             packageName = "Riffuna"
-            packageVersion = "0.2.0"
+            packageVersion = "0.2.1"
             modules("java.sql", "java.net.http", "jdk.crypto.ec", "jdk.httpserver")
             windows {
                 iconFile.set(rootProject.file("assets/riffuna.ico"))

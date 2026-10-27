@@ -659,9 +659,7 @@ fun TracksScreen(
                                 LocalOrder.ARTIST -> "По исполнителю"
                                 LocalOrder.SHORTEST -> "Сначала короткие"
                                 LocalOrder.LONGEST -> "Сначала длинные"
-                                else ->
-                                    if (state.view == LibraryView.PLAYLIST) "Порядок плейлиста"
-                                    else "Сначала новые"
+                                else -> defaultOrderLabel(state.view)
                             }
                     )
                 }
@@ -682,9 +680,7 @@ fun TracksScreen(
                             }
                     else
                         listOf(
-                                LocalOrder.CUSTOM to
-                                    if (state.view == LibraryView.PLAYLIST) "Порядок плейлиста"
-                                    else "Сначала новые",
+                                LocalOrder.CUSTOM to defaultOrderLabel(state.view),
                                 LocalOrder.TITLE to "По названию",
                                 LocalOrder.ARTIST to "По исполнителю",
                                 LocalOrder.SHORTEST to "Сначала короткие",
@@ -1014,3 +1010,10 @@ fun ResonanceScreen(controller: RiffunaController, state: AppState) {
             }
     }
 }
+
+private fun defaultOrderLabel(view: LibraryView): String =
+    when (view) {
+        LibraryView.PLAYLIST -> "Порядок плейлиста"
+        LibraryView.LOCAL -> "Порядок библиотеки"
+        else -> "Сначала новые"
+    }

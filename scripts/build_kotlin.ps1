@@ -58,7 +58,7 @@ try {
         & $taskGradle :shared:jvmTest :desktopApp:test :desktopApp:createDistributable --no-daemon --console=plain
         if($LASTEXITCODE -ne 0){throw 'Kotlin build failed.'}
     }finally{$env:RIFFUNA_LIVE_TEST=$taskPreviousLive}
-    $taskOutput=Join-Path $taskRoot 'dist\Riffuna-0.2.0'
+    $taskOutput=Join-Path $taskRoot 'dist\Riffuna-0.2.1'
     $taskRuntime=Join-Path $taskOutput 'Riffuna.runtime'
     $taskRunning=Get-Process Riffuna -ErrorAction SilentlyContinue|Where-Object{$_.Path -and $_.Path.StartsWith($taskOutput,[StringComparison]::OrdinalIgnoreCase)}
     if($taskRunning){throw 'Close the packaged Riffuna before updating its files.'}
@@ -85,6 +85,6 @@ try {
     if($taskReport.status -ne 'ok' -or $taskReport.python_runtime -ne $false -or $taskReport.qt_runtime -ne $false){throw 'Unexpected packaged runtime report.'}
     $taskApplicationJar=Get-ChildItem -LiteralPath (Join-Path $taskRuntime 'app') -Filter 'desktopApp-*.jar' -File|Select-Object -First 1
     if(-not $taskApplicationJar){throw 'Application JAR is missing.'}
-    @{version='0.2.0';application_jar=$taskApplicationJar.Name;application_sha256=(Get-FileHash -LiteralPath $taskApplicationJar.FullName -Algorithm SHA256).Hash.ToLowerInvariant();launcher_sha256=(Get-FileHash -LiteralPath (Join-Path $taskOutput 'Riffuna.exe') -Algorithm SHA256).Hash.ToLowerInvariant();source_lock_sha256=$taskLockHash.ToLowerInvariant();source_sha256=(Get-FileHash -LiteralPath source-runtime/index.mjs -Algorithm SHA256).Hash.ToLowerInvariant();diagnostics='passed';live_source_test=$(if($LiveTest){'passed'}else{'not_run'});built_at_utc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $taskOutput 'BUILD-MANIFEST.json') -Encoding utf8
+    @{version='0.2.1';application_jar=$taskApplicationJar.Name;application_sha256=(Get-FileHash -LiteralPath $taskApplicationJar.FullName -Algorithm SHA256).Hash.ToLowerInvariant();launcher_sha256=(Get-FileHash -LiteralPath (Join-Path $taskOutput 'Riffuna.exe') -Algorithm SHA256).Hash.ToLowerInvariant();source_lock_sha256=$taskLockHash.ToLowerInvariant();source_sha256=(Get-FileHash -LiteralPath source-runtime/index.mjs -Algorithm SHA256).Hash.ToLowerInvariant();diagnostics='passed';live_source_test=$(if($LiveTest){'passed'}else{'not_run'});built_at_utc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $taskOutput 'BUILD-MANIFEST.json') -Encoding utf8
     Write-Host "Ready: $taskOutput\Riffuna.exe"
 }finally{Pop-Location}

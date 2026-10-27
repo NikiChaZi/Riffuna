@@ -1,7 +1,7 @@
 param([switch]$Launch)
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $PSScriptRoot
-$taskPackage=Join-Path $taskRoot 'dist\Riffuna-0.2.0'
+$taskPackage=Join-Path $taskRoot 'dist\Riffuna-0.2.1'
 $taskSource=Join-Path $taskPackage 'Riffuna.runtime'
 $taskRuntime=Join-Path $taskRoot 'Riffuna.runtime'
 $taskTemporary=Join-Path $taskRoot 'Riffuna.runtime.next'

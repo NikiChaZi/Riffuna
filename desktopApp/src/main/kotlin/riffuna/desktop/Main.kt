@@ -101,7 +101,7 @@ private fun runApp(data: Path) = application {
                     put("source_provider", "YouTube.js")
                     put("python_runtime", false)
                     put("qt_runtime", false)
-                    put("app_version", "0.2.0")
+                    put("app_version", "0.2.1")
                     put("remote_server", false)
                     put("window_visible", window.isShowing)
                     put("likes", controller.state.value.likes.size)

@@ -18,6 +18,10 @@ import riffuna.desktop.ui.RiffunaApp
 
 /** Renders our own Compose content offscreen; never opens or operates desktop windows. */
 fun main() {
+    Thread.setDefaultUncaughtExceptionHandler { _, error ->
+        error.printStackTrace()
+        exitProcess(1)
+    }
     System.setProperty("java.awt.headless", "true")
     val root = Path.of(System.getProperty("riffuna.project"))
     val output = root.resolve(".test-data/ui-render")
@@ -54,6 +58,11 @@ fun main() {
         val scenes =
             listOf(
                 "home" to base,
+                "local-files" to
+                    base.copy(
+                        navigationState = base.navigationState.copy(view = LibraryView.LOCAL),
+                        libraryState = base.libraryState.copy(visibleTracks = emptyList()),
+                    ),
                 "likes" to
                     base.copy(
                         navigationState = base.navigationState.copy(view = LibraryView.LIKES),
@@ -110,8 +119,14 @@ fun main() {
                 Proxy.newProxyInstance(
                     RiffunaController::class.java.classLoader,
                     arrayOf(RiffunaController::class.java),
-                ) { _, method, _ ->
-                    if (method.name == "getState") flow else null
+                ) { instance, method, arguments ->
+                    when (method.name) {
+                        "getState" -> flow
+                        "equals" -> instance === arguments?.firstOrNull()
+                        "hashCode" -> System.identityHashCode(instance)
+                        "toString" -> "OffscreenRiffunaController"
+                        else -> null
+                    }
                 } as RiffunaController
             lateinit var scene: ImageComposeScene
             SwingUtilities.invokeAndWait {
