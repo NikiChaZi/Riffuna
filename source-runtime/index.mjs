@@ -119,14 +119,17 @@ async function videoSearch(query){
  const page=await(await yt()).search(query,{type:'video'});
  return {tracks:(page.videos||[]).slice(0,16).map(v=>({id:v.id,title:v.title?.text||String(v.title||''),artist:v.author?.name||'YouTube',duration:v.duration?.seconds||0,thumbnail:thumb(v.thumbnails),live:!!v.is_live,musicType:''}))};
 }
-async function resolve(id){
+async function resolve(id,preferredContainer='mp4'){
  if(!/^[\w-]{11}$/.test(id))throw Error('InvalidId');
  const api=await yt();
- const preference=f=>((f.is_original||/original|оригинал/i.test(f.audio_track?.display_name||''))?1000000:0)-((f.is_dubbed||f.is_auto_dubbed||f.is_descriptive||f.is_secondary)?2000000:0)+(f.audio_track?.audio_is_default?500000:0)+(f.mime_type?.includes('mp4')?100000:0)+(Math.min(Number(f.bitrate)||0,200000)/10);
+ const preference=f=>((f.is_original||/original|оригинал/i.test(f.audio_track?.display_name||''))?1000000:0)-((f.is_dubbed||f.is_auto_dubbed||f.is_descriptive||f.is_secondary)?2000000:0)+(f.audio_track?.audio_is_default?500000:0)+(f.mime_type?.includes(preferredContainer==='webm'?'webm':'mp4')?100000:0)+(Math.min(Number(f.bitrate)||0,200000)/10);
  const formatsFor=value=>{
   const formats=(value.streaming_data?.adaptive_formats||[]).filter(f=>f.has_audio&&!f.has_video&&(f.url||f.signature_cipher||f.cipher)).sort((a,b)=>preference(b)-preference(a));
   const identity=f=>f.audio_track?.id||f.audio_track?.display_name||'';
-  return formats.filter(f=>identity(f)===identity(formats[0]||{})).slice(0,2);
+  const matching=formats.filter(f=>identity(f)===identity(formats[0]||{}));
+  const first=matching[0];
+  const alternative=matching.find(f=>f.mime_type?.split(';')[0]!==first?.mime_type?.split(';')[0]);
+  return [first,alternative||matching[1]].filter(Boolean);
  };
  const validate=async(url,client)=>{
   const parsed=new URL(url);if(parsed.protocol!=='https:'||!(parsed.hostname==='googlevideo.com'||parsed.hostname.endsWith('.googlevideo.com')))return null;
@@ -150,8 +153,10 @@ async function resolve(id){
   const [,token]=await Promise.all([ensurePlayer(api),mintPlaybackToken(id)]);
   const value=await api.getBasicInfo(id,{client:'YTMUSIC'});
   if(value.basic_info.id===id)for(const format of formatsFor(value)){
-   const url=new URL(await format.decipher(api.session.player));url.searchParams.set('pot',token);
-   const stream=await validate(url.href,'YTMUSIC');if(stream)return stream;
+   try{
+    const url=new URL(await format.decipher(api.session.player));url.searchParams.set('pot',token);
+    const stream=await validate(url.href,'YTMUSIC');if(stream)return stream;
+   }catch(error){trace({phase:'attested-format-error',type:error.name});}
   }
  }catch(error){trace({phase:'attested-client-error',type:error.name});}
  for(const client of ['VISIONOS','IOS','ANDROID_VR']){

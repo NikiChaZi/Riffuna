@@ -287,6 +287,64 @@ class AndroidSmokeTest {
     }
 
     @Test
+    fun severalTracksStartPauseSeekAndResume(): Unit = runBlocking {
+        Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("liveNetwork") == "true")
+        val name = "multi-${UUID.randomUUID()}.sqlite3"
+        val library = AndroidLibrary(context, name)
+        val client = SourceHttp.client()
+        lateinit var source: BrowserMusicSource
+        lateinit var audio: AndroidAudio
+        var track: Track? = null
+        instrumentation.runOnMainSync {
+            source = BrowserMusicSource(context, client, library)
+            audio = AndroidAudio(context, client, "test-multi-${UUID.randomUUID()}") { track }
+            audio.setVolume(0f)
+        }
+        try {
+            for ((index, query) in
+                listOf("Дора Верю", "Rules of Nature", "Lady Gaga Just Dance").withIndex()) {
+                track = source.search(query, 1).first()
+                android.util.Log.i("RiffunaTest", "MULTI_TRACK_RESOLVE index=$index")
+                val started = android.os.SystemClock.elapsedRealtime()
+                audio.open(source.resolve(requireNotNull(track)))
+                withTimeout(45000) {
+                    while (!audio.state.value.playing || audio.state.value.positionMs < 750) {
+                        audio.state.value.error?.let { error(it) }
+                        delay(100)
+                    }
+                }
+                val startup = android.os.SystemClock.elapsedRealtime() - started
+                val seek = (audio.state.value.durationMs * 0.7).toLong()
+                instrumentation.runOnMainSync {
+                    audio.pause()
+                    audio.seek(seek)
+                }
+                withTimeout(15000) {
+                    while (kotlin.math.abs(audio.state.value.positionMs - seek) > 1000) delay(100)
+                }
+                assertFalse(audio.state.value.playing)
+                instrumentation.runOnMainSync { audio.resume() }
+                withTimeout(15000) {
+                    while (
+                        !audio.state.value.playing || audio.state.value.positionMs < seek + 500
+                    ) {
+                        audio.state.value.error?.let { error(it) }
+                        delay(100)
+                    }
+                }
+                android.util.Log.i("RiffunaTest", "MULTI_TRACK_OK index=$index startup_ms=$startup")
+            }
+        } finally {
+            instrumentation.runOnMainSync {
+                audio.close()
+                source.close()
+            }
+            library.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
     fun browserSearchResolveAndSilentMedia3Playback(): Unit = runBlocking {
         Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("liveNetwork") == "true")
         val name = "live-${UUID.randomUUID()}.sqlite3"

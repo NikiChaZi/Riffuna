@@ -13,8 +13,8 @@ android {
         applicationId = "app.riffuna.player"
         minSdk = 26
         targetSdk = 36
-        versionCode = 30001
-        versionName = "0.3.0-android.1"
+        versionCode = 30002
+        versionName = "0.3.0-android.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {

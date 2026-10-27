@@ -46,7 +46,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_kotlin.ps1
 
 Начат Android MVP: портретный Compose UI, общее Kotlin-ядро, Media3, локальная SQLite, поиск, очередь, лайки, история, плейлисты и импорт файлов. Проверочная APK-сборка прошла тесты в BlueStacks; это ещё не стабильный Android-релиз. «Резонанс» и расширенный поиск альтернатив пока остаются в Windows. [Сборка, проверки и ограничения Android](docs/android-mvp.md).
 
-[Скачать APK Android](https://github.com/NikiChaZi/Riffuna/releases/download/v0.3.0-android.1/Riffuna-android.apk) · [Описание предварительного выпуска](https://github.com/NikiChaZi/Riffuna/releases/tag/v0.3.0-android.1). Android 8.0 и новее. Установи APK как обычное приложение; отдельные Python, Node.js, Java и сервер не нужны. Для YouTube требуется доступ через сеть телефона.
+[Скачать APK Android](https://github.com/NikiChaZi/Riffuna/releases/download/v0.3.0-android.2/Riffuna-android.apk) · [Описание предварительного выпуска](https://github.com/NikiChaZi/Riffuna/releases/tag/v0.3.0-android.2). Android 8.0 и новее. Установи APK как обычное приложение; отдельные Python, Node.js, Java и сервер не нужны. Для YouTube требуется доступ через сеть телефона.
 
 ## Лицензия
 

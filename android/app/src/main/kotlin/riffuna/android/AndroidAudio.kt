@@ -16,7 +16,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.*
 import java.io.File
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -88,6 +87,10 @@ class AndroidAudio(
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    android.util.Log.w(
+                        "RiffunaAudio",
+                        "code=${error.errorCodeName} cause=${error.cause?.javaClass?.simpleName.orEmpty()}",
+                    )
                     val track = current()
                     val refresh = refreshSource
                     if (
@@ -120,7 +123,10 @@ class AndroidAudio(
                             }
                         return
                     }
-                    failure = "Не удалось воспроизвести запись. Проверь подключение и VPN"
+                    failure =
+                        if (error.errorCode in 2000..2999)
+                            "Аудиосервер недоступен. Повтори воспроизведение после восстановления сети"
+                        else "Android не смог воспроизвести эту аудиозапись"
                     publish()
                 }
             }
@@ -275,13 +281,7 @@ class AppGraph(
     libraryName: String = "library.sqlite3",
     cacheName: String = "audio",
 ) {
-    val http =
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .callTimeout(25, TimeUnit.SECONDS)
-            .followRedirects(false)
-            .build()
+    val http = SourceHttp.client()
     val library = AndroidLibrary(context, libraryName)
     val audio = AndroidAudio(context, http, cacheName) { controller.state.value.current }
     val source = BrowserMusicSource(context, http, library, audio::cached)
@@ -310,6 +310,15 @@ class PlaybackService : MediaSessionService() {
         graph = (application as RiffunaApplication).graph
         val routing =
             object : ForwardingPlayer(graph.audio.player) {
+                override fun play() = graph.controller.resumePlayback()
+
+                override fun pause() = graph.controller.pausePlayback()
+
+                override fun setPlayWhenReady(playWhenReady: Boolean) {
+                    if (playWhenReady) graph.controller.resumePlayback()
+                    else graph.controller.pausePlayback()
+                }
+
                 override fun getAvailableCommands(): Player.Commands =
                     super.getAvailableCommands()
                         .buildUpon()

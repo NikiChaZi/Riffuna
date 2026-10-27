@@ -9,6 +9,8 @@ import androidx.webkit.WebViewAssetLoader
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -29,6 +31,11 @@ class BrowserMusicSource(
     private val ready = CompletableDeferred<Unit>()
     private val requests = ConcurrentHashMap<Int, CompletableDeferred<JsonObject>>()
     private val ids = AtomicInteger()
+    private val network = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val networkSlots = Semaphore(4)
+    private val networkJobs = ConcurrentHashMap<Int, Job>()
+    private val networkCalls = ConcurrentHashMap<Int, Call>()
+    @Volatile private var closed = false
     private val web = WebView(context)
     private val loader =
         WebViewAssetLoader.Builder()
@@ -115,7 +122,31 @@ class BrowserMusicSource(
         }
 
         @JavascriptInterface
-        fun http(payload: String): String =
+        fun http(id: Int, payload: String) {
+            if (closed || id <= 0) return
+            if (payload.length > 262144 || networkJobs.size >= 32) {
+                network.launch { deliverHttp(id, "{\"error\":true}") }
+                return
+            }
+            val job =
+                network.launch(start = CoroutineStart.LAZY) {
+                    try {
+                        val result = networkSlots.withPermit { performHttp(id, payload) }
+                        deliverHttp(id, result)
+                    } finally {
+                        networkJobs.remove(id)
+                    }
+                }
+            if (networkJobs.putIfAbsent(id, job) == null) job.start() else job.cancel()
+        }
+
+        @JavascriptInterface
+        fun cancelHttp(id: Int) {
+            networkCalls[id]?.cancel()
+            networkJobs.remove(id)?.cancel()
+        }
+
+        private fun performHttp(id: Int, payload: String): String =
             try {
                 require(payload.length <= 262144)
                 val row = Json.parseToJsonElement(payload).jsonObject
@@ -147,54 +178,72 @@ class BrowserMusicSource(
                         )
                     else null,
                 )
-                http.newCall(builder.build()).execute().use { response ->
-                    android.util.Log.i(
-                        "RiffunaSource",
-                        "HTTPS status=" +
-                            response.code +
-                            " kind=" +
-                            (if (uri.host.orEmpty().endsWith(".googlevideo.com")) "audio"
-                            else if (uri.path.orEmpty().endsWith("base.js")) "player" else "api"),
+                SourceHttp.execute(
+                        http,
+                        builder.build(),
+                        onCall = { networkCalls[id] = it },
+                        cancelled = { networkJobs[id]?.isActive != true },
                     )
-                    val bytes =
-                        response.body?.byteStream()?.use { stream ->
-                            val output = java.io.ByteArrayOutputStream()
-                            val buffer = ByteArray(16384)
-                            while (true) {
-                                val count = stream.read(buffer)
-                                if (count < 0) break
-                                require(output.size() + count <= 12 * 1024 * 1024)
-                                output.write(buffer, 0, count)
+                    .use { response ->
+                        android.util.Log.i(
+                            "RiffunaSource",
+                            "HTTPS status=" +
+                                response.code +
+                                " kind=" +
+                                (if (uri.host.orEmpty().endsWith(".googlevideo.com")) "audio"
+                                else if (uri.path.orEmpty().endsWith("base.js")) "player"
+                                else "api"),
+                        )
+                        val bytes =
+                            response.body?.byteStream()?.use { stream ->
+                                val output = java.io.ByteArrayOutputStream()
+                                val buffer = ByteArray(16384)
+                                while (true) {
+                                    val count = stream.read(buffer)
+                                    if (count < 0) break
+                                    require(output.size() + count <= 12 * 1024 * 1024)
+                                    output.write(buffer, 0, count)
+                                }
+                                output.toByteArray()
+                            } ?: byteArrayOf()
+                        buildJsonObject {
+                                put("status", response.code)
+                                put("body", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                                put(
+                                    "headers",
+                                    buildJsonObject {
+                                        response.headers
+                                            .names()
+                                            .filter {
+                                                it.lowercase() !in
+                                                    setOf(
+                                                        "content-encoding",
+                                                        "content-length",
+                                                        "set-cookie",
+                                                    )
+                                            }
+                                            .forEach { put(it, response.header(it).orEmpty()) }
+                                    },
+                                )
                             }
-                            output.toByteArray()
-                        } ?: byteArrayOf()
-                    buildJsonObject {
-                            put("status", response.code)
-                            put("body", Base64.encodeToString(bytes, Base64.NO_WRAP))
-                            put(
-                                "headers",
-                                buildJsonObject {
-                                    response.headers
-                                        .names()
-                                        .filter {
-                                            it.lowercase() !in
-                                                setOf(
-                                                    "content-encoding",
-                                                    "content-length",
-                                                    "set-cookie",
-                                                )
-                                        }
-                                        .forEach { put(it, response.header(it).orEmpty()) }
-                                },
-                            )
-                        }
-                        .toString()
-                }
+                            .toString()
+                    }
             } catch (error: Exception) {
                 android.util.Log.w("RiffunaSource", "HTTPS failure=" + error.javaClass.simpleName)
                 "{\"error\":true}"
+            } finally {
+                networkCalls.remove(id)
             }
     }
+
+    private suspend fun deliverHttp(id: Int, result: String) =
+        withContext(Dispatchers.Main) {
+            if (!closed)
+                web.evaluateJavascript(
+                    "globalThis.riffunaHttpResponse($id,${JsonPrimitive(result)})",
+                    null,
+                )
+        }
 
     private suspend fun request(action: String, values: Map<String, JsonElement>): JsonObject =
         withTimeout(120000) {
@@ -366,6 +415,9 @@ class BrowserMusicSource(
     }
 
     override fun close() {
+        closed = true
+        networkCalls.values.forEach { it.cancel() }
+        network.cancel()
         requests.values.forEach { it.cancel() }
         requests.clear()
         web.removeJavascriptInterface("Native")

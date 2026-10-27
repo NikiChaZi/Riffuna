@@ -1088,6 +1088,26 @@ class LocalController(
         queue.previous(state.value.shuffle)?.let { playQueued(it.index, it.recordHistory) }
     }
 
+    fun pausePlayback() {
+        wantPlay = false
+        audio.pause()
+    }
+
+    fun resumePlayback() {
+        wantPlay = true
+        val current = state.value
+        if (current.playbackLoading) {
+            if (sourceAttached) audio.resume()
+        } else if (current.current == null) {
+            if (current.queue.isNotEmpty()) playQueued(0)
+        } else if (!sourceAttached) {
+            play(current.queue.getOrNull(current.queueIndex) ?: requireNotNull(current.current))
+        } else {
+            if (audio.state.value.ended) audio.seek(0)
+            audio.resume()
+        }
+    }
+
     override fun toggle() {
         val s = state.value
         if (s.playbackLoading) {

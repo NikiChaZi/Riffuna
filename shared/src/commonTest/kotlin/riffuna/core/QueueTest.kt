@@ -10,6 +10,70 @@ class QueueTest {
     private fun track(id: Char) = Track(id.toString().repeat(11), "Song $id", "Artist", 180)
 
     @Test
+    fun systemPauseDuringResolvePreventsLateAutoplay() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val pending = CompletableDeferred<AudioSource>()
+        val source =
+            object : MusicSource {
+                override suspend fun search(query: String, limit: Int) = emptyList<Track>()
+
+                override suspend fun resolve(track: Track) = pending.await()
+            }
+        val audio = FakeAudio()
+        val controller = LocalController(MemoryLibrary(), source, audio, dispatcher)
+        try {
+            controller.play(track('a'))
+            runCurrent()
+            controller.pausePlayback()
+            pending.complete(AudioSource("file:///test.m4a"))
+            runCurrent()
+            assertEquals(1, audio.opened)
+            assertFalse(requireNotNull(audio.lastSource).autoPlay)
+            assertFalse(audio.state.value.playing)
+            controller.resumePlayback()
+            controller.resumePlayback()
+            runCurrent()
+            assertTrue(audio.state.value.playing)
+            assertEquals(1, audio.opened)
+            controller.pausePlayback()
+            runCurrent()
+            assertFalse(audio.state.value.playing)
+        } finally {
+            controller.close()
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun systemPlayRestartsAnEndedRecording() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val source =
+            object : MusicSource {
+                override suspend fun search(query: String, limit: Int) = emptyList<Track>()
+
+                override suspend fun resolve(track: Track) = AudioSource("file:///test.m4a")
+            }
+        val audio = FakeAudio()
+        val controller = LocalController(MemoryLibrary(), source, audio, dispatcher)
+        try {
+            controller.play(track('a'))
+            runCurrent()
+            audio.state.value = AudioState(180000, 180000, false, true)
+            runCurrent()
+            controller.resumePlayback()
+            runCurrent()
+            assertEquals(0, audio.state.value.positionMs)
+            assertTrue(audio.state.value.playing)
+            assertEquals(1, audio.opened)
+        } finally {
+            controller.close()
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
     fun directSelectionDoesNotEnqueueAndClearKeepsCurrent() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))
         val library = MemoryLibrary()
@@ -129,18 +193,27 @@ private class FakeSource : MusicSource {
 private class FakeAudio : AudioEngine {
     override val state = MutableStateFlow(AudioState())
     var opened = 0
+    var lastSource: AudioSource? = null
 
     override suspend fun open(source: AudioSource) {
         opened++
+        lastSource = source
+        state.value = AudioState(playing = source.autoPlay)
     }
 
     override fun toggle() {}
 
-    override fun pause() {}
+    override fun pause() {
+        state.value = state.value.copy(playing = false)
+    }
 
-    override fun resume() {}
+    override fun resume() {
+        state.value = state.value.copy(playing = true)
+    }
 
-    override fun seek(positionMs: Long) {}
+    override fun seek(positionMs: Long) {
+        state.value = state.value.copy(positionMs = positionMs, ended = false)
+    }
 
     override fun setVolume(volume: Float) {}
 

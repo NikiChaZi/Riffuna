@@ -10,7 +10,7 @@ const template=read('android/source-runtime/bridge.mjs');
 const packageRoot=path.join(root,'source-runtime/node_modules/youtubei.js');
 if(JSON.parse(fs.readFileSync(path.join(packageRoot,'package.json'),'utf8')).version!=='18.3.0')throw Error('Unexpected YouTube.js version');
 function section(start,end){const first=source.indexOf(start);const last=source.indexOf(end,first+start.length);if(first<0||last<first)throw Error('Desktop source marker changed');return source.slice(first,last);}
-const adapter=template.replace('/* RIFFUNA_MUSIC_SEARCH */\n',section('async function musicSearch(query,limit)','async function info(id)')).replace('/* RIFFUNA_RESOLVE */\n',section('async function resolve(id)','async function execute(request)'));
+const adapter=template.replace('/* RIFFUNA_MUSIC_SEARCH */\n',section('async function musicSearch(query,limit)','async function info(id)')).replace('/* RIFFUNA_RESOLVE */\n',section('async function resolve(','async function execute(request)'));
 const outputs={
  'android.mjs':Buffer.from(adapter),
  'youtubei.js':fs.readFileSync(path.join(packageRoot,'bundle/browser.js')),

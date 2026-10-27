@@ -33,6 +33,7 @@ internal class RangeAudioDataSource(
     private var response: Response? = null
     private var stream: InputStream? = null
     @Volatile private var call: Call? = null
+    @Volatile private var cancelled = false
     private var started = false
 
     override fun addTransferListener(transferListener: TransferListener) {
@@ -46,6 +47,7 @@ internal class RangeAudioDataSource(
 
     override fun open(dataSpec: DataSpec): Long {
         close()
+        cancelled = false
         require(SourceTransportPolicy.allowed(dataSpec.uri.toString(), audioOnly = true))
         require(dataSpec.httpMethod == DataSpec.HTTP_METHOD_GET)
         spec = dataSpec
@@ -83,9 +85,14 @@ internal class RangeAudioDataSource(
                     header("Accept-Encoding", "identity")
                 }
                 .build()
-        val next = client.newCall(request)
-        call = next
-        val result = next.execute()
+        val result =
+            SourceHttp.execute(
+                client,
+                request,
+                audioOnly = true,
+                onCall = { call = it },
+                cancelled = { cancelled },
+            )
         try {
             if (result.code != 206) throw IOException("Audio HTTP " + result.code)
             val match =
@@ -132,6 +139,7 @@ internal class RangeAudioDataSource(
     }
 
     override fun close() {
+        cancelled = true
         call?.cancel()
         call = null
         response?.close()

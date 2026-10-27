@@ -4,6 +4,21 @@ Log.setLevel(0);
 Constants.URLS.API.PRODUCTION_1=Constants.URLS.API.PRODUCTION_2;
 Platform.shim.eval=async(data)=>new Function(data.output)();
 const trace=()=>{};
+let httpSequence=0;
+const httpRequests=new Map();
+globalThis.riffunaHttpResponse=(id,response)=>httpRequests.get(id)?.(response);
+function nativeRequest(payload,signal){
+ return new Promise((resolve,reject)=>{
+  if(signal?.aborted){reject(new DOMException('Request cancelled','AbortError'));return;}
+  const id=++httpSequence;
+  const finish=()=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);httpRequests.delete(id);};
+  const abort=()=>{finish();Native.cancelHttp(id);reject(new DOMException('Request cancelled','AbortError'));};
+  const timer=setTimeout(abort,30000);
+  httpRequests.set(id,response=>{finish();resolve(response);});
+  signal?.addEventListener('abort',abort,{once:true});
+  try{Native.http(id,JSON.stringify(payload));}catch(error){finish();reject(error);}
+ });
+}
 const nativeFetch=async(input,init={})=>{
  const request=new Request(input,init);
  const url=new URL(request.url);
@@ -12,7 +27,7 @@ const nativeFetch=async(input,init={})=>{
  const headers={...Object.fromEntries(request.headers.entries()),...Object.fromEntries(new Headers(init.headers||{}).entries())};
  if(!Object.keys(headers).some(key=>key.toLowerCase()==='user-agent'))headers['User-Agent']=PLAYBACK_USER_AGENT;
  const body=request.method==='GET'||request.method==='HEAD'?'':await request.text();
- const raw=JSON.parse(Native.http(JSON.stringify({url:url.href,method:request.method,headers,body})));
+ const raw=JSON.parse(await nativeRequest({url:url.href,method:request.method,headers,body},request.signal));
  if(raw.error)throw Error('NetworkUnavailable');
  const bytes=Uint8Array.from(atob(raw.body||''),c=>c.charCodeAt(0));
  return new Response(request.method==='HEAD'||[204,205,304].includes(raw.status)?null:bytes,{status:raw.status,headers:raw.headers});
@@ -22,9 +37,12 @@ const mintPlaybackToken=createTokenProvider(nativeFetch,undefined,stage=>Native.
 Platform.shim.fetch=nativeFetch;
 let session;
 const yt=async()=>session??=Innertube.create({lang:'en',location:'US',fetch:nativeFetch,retrieve_player:false,generate_session_locally:true,retrieve_innertube_config:false});
+const playerRequests=new WeakMap();
 async function ensurePlayer(api){
- if(!api.session.player)api.session.player=await Player.create(undefined,nativeFetch);
- return api.session.player;
+ if(api.session.player)return api.session.player;
+ let pending=playerRequests.get(api);
+ if(!pending){pending=Player.create(undefined,nativeFetch).then(player=>api.session.player=player).finally(()=>playerRequests.delete(api));playerRequests.set(api,pending);}
+ return pending;
 }
 function thumb(values){return [...(values||[])].sort((a,b)=>Math.abs((a.width||120)-360)-Math.abs((b.width||120)-360))[0]?.url||'';}
 const searches=new Map();
@@ -45,14 +63,17 @@ async function musicSearch(query,limit){
  searches.set(query,{rows,page,done,expires:Date.now()+300000});while(searches.size>12)searches.delete(searches.keys().next().value);
  return {tracks:rows.slice(0,limit)};
 }
-async function resolve(id){
+async function resolve(id,preferredContainer='mp4'){
  if(!/^[\w-]{11}$/.test(id))throw Error('InvalidId');
  const api=await yt();
- const preference=f=>((f.is_original||/original|оригинал/i.test(f.audio_track?.display_name||''))?1000000:0)-((f.is_dubbed||f.is_auto_dubbed||f.is_descriptive||f.is_secondary)?2000000:0)+(f.audio_track?.audio_is_default?500000:0)+(f.mime_type?.includes('mp4')?100000:0)+(Math.min(Number(f.bitrate)||0,200000)/10);
+ const preference=f=>((f.is_original||/original|оригинал/i.test(f.audio_track?.display_name||''))?1000000:0)-((f.is_dubbed||f.is_auto_dubbed||f.is_descriptive||f.is_secondary)?2000000:0)+(f.audio_track?.audio_is_default?500000:0)+(f.mime_type?.includes(preferredContainer==='webm'?'webm':'mp4')?100000:0)+(Math.min(Number(f.bitrate)||0,200000)/10);
  const formatsFor=value=>{
   const formats=(value.streaming_data?.adaptive_formats||[]).filter(f=>f.has_audio&&!f.has_video&&(f.url||f.signature_cipher||f.cipher)).sort((a,b)=>preference(b)-preference(a));
   const identity=f=>f.audio_track?.id||f.audio_track?.display_name||'';
-  return formats.filter(f=>identity(f)===identity(formats[0]||{})).slice(0,2);
+  const matching=formats.filter(f=>identity(f)===identity(formats[0]||{}));
+  const first=matching[0];
+  const alternative=matching.find(f=>f.mime_type?.split(';')[0]!==first?.mime_type?.split(';')[0]);
+  return [first,alternative||matching[1]].filter(Boolean);
  };
  const validate=async(url,client)=>{
   const parsed=new URL(url);if(parsed.protocol!=='https:'||!(parsed.hostname==='googlevideo.com'||parsed.hostname.endsWith('.googlevideo.com')))return null;
@@ -76,8 +97,10 @@ async function resolve(id){
   const [,token]=await Promise.all([ensurePlayer(api),mintPlaybackToken(id)]);
   const value=await api.getBasicInfo(id,{client:'YTMUSIC'});
   if(value.basic_info.id===id)for(const format of formatsFor(value)){
-   const url=new URL(await format.decipher(api.session.player));url.searchParams.set('pot',token);
-   const stream=await validate(url.href,'YTMUSIC');if(stream)return stream;
+   try{
+    const url=new URL(await format.decipher(api.session.player));url.searchParams.set('pot',token);
+    const stream=await validate(url.href,'YTMUSIC');if(stream)return stream;
+   }catch(error){trace({phase:'attested-format-error',type:error.name});}
   }
  }catch(error){trace({phase:'attested-client-error',type:error.name});}
  for(const client of ['VISIONOS','IOS','ANDROID_VR']){
@@ -99,7 +122,7 @@ async function resolve(id){
 
 async function execute(r){
  if(r.action==='search'){const result=await musicSearch(String(r.query||''),Math.min(180,Math.max(1,r.limit||40)));setTimeout(()=>Promise.all([yt().then(ensurePlayer),mintPlaybackToken.prepare()]).catch(()=>{}),0);return result;}
- if(r.action==='resolve')return resolve(r.id);
+ if(r.action==='resolve')return resolve(r.id,'webm');
  throw Error('UnknownAction');
 }
 globalThis.riffunaRequest=async(id,request)=>{
