@@ -1,0 +1,9 @@
+{
+  "version": "Temurin-21.0.12.1+1",
+  "file": "OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz",
+  "sha256": "573057d03584ae793fb7ec9a14c76d826d9187a53efeefd99da47403a5308234",
+  "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk-sources_21.0.12.1_1.tar.gz",
+  "build_revision": "e6ba7dec3d07654074559310376a3ae89da5f4ac",
+  "source_revision": "1c417fbfc2f7",
+  "build_repository": "https://github.com/adoptium/temurin-build/tree/e6ba7dec3d07654074559310376a3ae89da5f4ac"
+}

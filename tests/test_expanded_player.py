@@ -85,12 +85,13 @@ def test_rapid_reverse_and_reduced_motion_restore_focus(panel, app):
     view.policy.set_reduced(False)
     opened, closed = QSignalSpy(view.opened), QSignalSpy(view.closed)
     view.open_from(source)
-    QTest.qWait(45)
-    assert view._travel.running
+    view._travel.animation.pause()
+    view._travel.animation.setCurrentTime(45)
     middle = view._travel.value
     view.collapse()
     assert view._travel.animation.startValue() == middle
-    QTest.qWait(25)
+    view._travel.animation.pause()
+    view._travel.animation.setCurrentTime(25)
     view.open_from(source)
     view.policy.set_reduced(True)
     app.processEvents()
@@ -249,7 +250,7 @@ def test_controller_payload_supports_metadata_local_lrc_and_not_found(panel):
     host, source, view = panel
     assert view.apply_lyrics_payload(FIRST.video_id, payload())
     assert view.lyrics.document.state == LyricsState.SYNCED
-    assert "метаданным" in view.lyrics.footer.text()
+    assert "приблизительно" in view.lyrics.footer.text()
     local = payload(quality="user_import")
     local.update(source="local", timing_source="local_lrc")
     view.apply_lyrics_payload(FIRST.video_id, local)
@@ -307,7 +308,7 @@ def test_overlay_is_opaque_and_flight_uses_full_resolution_cover(panel, app):
     view.policy.set_reduced(True)
     app.processEvents()
     image = host.grab().toImage()
-    assert image.pixelColor(30, 730).name() == "#111615"
+    assert image.pixelColor(30, 730).name() == "#101214"
 
 
 def test_hidden_position_updates_have_no_background_animations(panel):

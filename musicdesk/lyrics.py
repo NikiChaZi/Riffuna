@@ -10,20 +10,16 @@ from pathlib import Path
 import re
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 
 import requests
 
 from .models import Track
+from .lyric_timing import TimedLine as LyricLine, WordCue, inline_words, parse_ttml
 
 MAX_BYTES = 1024 * 1024
 STAMPS = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
 TAGS = re.compile(r"\[(?:ar|ti|al|by|re|ve|length|offset):[^\]]*\]", re.I)
-
-
-@dataclass(frozen=True)
-class LyricLine:
-    start_ms: int
-    text: str
 
 
 def parse_lrc(text: str) -> tuple[LyricLine, ...]:
@@ -37,6 +33,7 @@ def parse_lrc(text: str) -> tuple[LyricLine, ...]:
         if not stamps:
             continue
         words = STAMPS.sub("", TAGS.sub("", raw)).strip()
+        plain, timed_words = inline_words(words, offset_ms)
         for stamp in stamps:
             minutes, seconds = int(stamp[1]), int(stamp[2])
             if seconds >= 60:
@@ -44,7 +41,9 @@ def parse_lrc(text: str) -> tuple[LyricLine, ...]:
             fraction = int((stamp[3] or "").ljust(3, "0"))
             start = max(0, (minutes * 60 + seconds) * 1000 + fraction - offset_ms)
             if start <= 6 * 3600 * 1000:
-                rows.append(LyricLine(start, words))
+                adjusted = timed_words if len(stamps) == 1 else ()
+                rows.append(LyricLine(start, plain, adjusted,
+                                     max(word.end_ms for word in adjusted) if adjusted else None))
         if len(rows) > 10000:
             raise ValueError("Too many timed lines")
     return tuple(sorted(dict.fromkeys(rows), key=lambda row: row.start_ms))
@@ -100,7 +99,8 @@ def _editions(value: str) -> frozenset[str]:
 def packet(track: Track, state: str, *, lines=(), plain_text="", source="", source_url="",
            timing_source="none", match_quality="none", message="") -> dict:
     return {"recording_id": track.video_id, "state": state,
-            "lines": [asdict(row) for row in lines], "plain_text": plain_text,
+            "lines": [dict(start_ms=row.start_ms, text=row.text,
+                           **({"words": [asdict(word) for word in row.words], "end_ms": row.end_ms} if row.words else {})) for row in lines], "plain_text": plain_text,
             "source": source, "source_url": source_url, "timing_source": timing_source,
             "match_quality": match_quality, "message": message}
 
@@ -275,6 +275,9 @@ class LyricsStore:
 
     def load(self, track, force=False):
         override = self.directory / (track.video_id + ".lrc")
+        ttml = self.directory / (track.video_id + ".ttml")
+        if ttml.is_file():
+            return self._local(track, ttml)
         if override.is_file():
             return self._local(track, override)
         cache = self.directory / (track.video_id + ".json")
@@ -314,11 +317,53 @@ class LyricsStore:
             pass  # Lyrics still work when caching is unavailable.
         return result
 
+    def enrich_words(self, track, payload, force=False):
+        """Keep the first line response fast; optional enrichment runs afterwards."""
+        if payload.get("state") != "synced" or payload.get("source") == "local" or any(row.get("words") for row in payload.get("lines", ())):
+            return payload
+        cache = self.directory / (track.video_id + ".words.json")
+        reference = json.dumps([payload.get("plain_text", ""), payload.get("lines", ())], ensure_ascii=False, sort_keys=True)
+        signature = self._signature(track) + hashlib.sha256(reference.encode("utf-8")).hexdigest()
+        if not force:
+            try:
+                if cache.stat().st_size <= MAX_BYTES:
+                    record = json.loads(cache.read_text(encoding="utf-8"))
+                    if isinstance(record, dict) and record.get("signature") == signature and record.get("expires", 0) > self.clock():
+                        saved = record.get("payload")
+                        if saved is None:
+                            return payload
+                        if isinstance(saved, dict) and saved.get("recording_id") == track.video_id and saved.get("state") == "synced":
+                            from .word_lyrics import compatible_words
+                            rows = tuple(LyricLine(row["start_ms"], row["text"],
+                                         tuple(WordCue(**word) for word in row.get("words", ())), row.get("end_ms"))
+                                         for row in saved.get("lines", ()))
+                            if compatible_words(track, payload, rows):
+                                return saved
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+        from .word_lyrics import BetterWords
+        enriched = BetterWords().enrich(track, payload)
+        has_words = any(row.get("words") for row in enriched.get("lines", ()))
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            record = {"signature": signature, "expires": self.clock() + (30*86400 if has_words else 86400),
+                      "payload": enriched if has_words else None}
+            temporary = cache.with_suffix(".json.part")
+            temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(cache)
+        except OSError:
+            pass
+        return enriched
+
     def import_lrc(self, track, path):
         path = Path(path)
         result = self._local(track, path)
         self.directory.mkdir(parents=True, exist_ok=True)
-        (self.directory / (track.video_id + ".lrc")).write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+        extension = ".ttml" if path.suffix.lower() in {".ttml", ".xml"} else ".lrc"
+        target = self.directory / (track.video_id + extension)
+        target.write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+        other = self.directory / (track.video_id + (".lrc" if extension == ".ttml" else ".ttml"))
+        other.unlink(missing_ok=True)
         return result
 
     def _local(self, track, path):
@@ -326,10 +371,11 @@ class LyricsStore:
             raise LyricsUnavailable("Файл текста слишком большой.")
         try:
             text = path.read_text(encoding="utf-8-sig")
-            lines = parse_lrc(text)
-        except (UnicodeError, ValueError):
+            is_ttml = path.suffix.lower() in {".ttml", ".xml"}
+            lines = parse_ttml(text) if is_ttml else parse_lrc(text)
+        except (UnicodeError, ValueError, ET.ParseError):
             raise LyricsUnavailable("Не удалось прочитать LRC. Сохрани файл в UTF-8.") from None
         if not lines or not any(line.text for line in lines):
             raise LyricsUnavailable("В LRC нет строк с таймкодами.")
         return packet(track, "synced", lines=lines, plain_text="\n".join(line.text for line in lines),
-                      source="local", timing_source="local_lrc", match_quality="user_import")
+                      source="local", timing_source="local_ttml" if is_ttml else "local_lrc", match_quality="user_import")

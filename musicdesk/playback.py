@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import uuid
 import logging
 import time
@@ -38,9 +39,26 @@ class Playback(QObject):
         self.streams = StreamCache(source.resolve)
         self.queue = library.load_queue()
         self._current = library.load_current() or self.queue.current
+        try:
+            continuation = json.loads(library.get_setting("queue_continuation", "null"))
+        except (ValueError, TypeError):
+            continuation = None
+        available = {track.video_id for track in self.queue.tracks}
+        self._continuation = (list(dict.fromkeys(value for value in continuation
+                              if isinstance(value, str) and value in available))
+                              if isinstance(continuation, list) and self.queue.index == -1
+                              and self._current else None)
         self._shuffle = library.get_setting("shuffle", "off") == "on"
         self._shuffle_order = ShuffleOrder()
         self._reset_shuffle()
+        try:
+            priority = json.loads(library.get_setting("queue_next_ids", "[]"))
+        except (ValueError, TypeError):
+            priority = []
+        if isinstance(priority, list):
+            self._shuffle_order.priority = list(dict.fromkeys(
+                value for value in priority if isinstance(value, str)
+                and value in self._shuffle_order.ids))
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.prefetch_pool = QThreadPool(self)
@@ -92,38 +110,67 @@ class Playback(QObject):
         if self.shuffle:
             self._sync_shuffle()
             return self._shuffle_order.peek(self.repeat) is not None
-        return bool(self.queue.tracks) and (self.repeat or self.queue.index + 1 < len(self.queue.tracks))
+        return self._linear_next() is not None
+
+    def _linear_next(self):
+        available = {track.video_id: track for track in self.queue.tracks}
+        priority = next((available[value] for value in self._shuffle_order.priority
+                         if value in available), None)
+        if priority is not None:
+            return priority
+        if self._continuation is not None:
+            candidate = next((available[value] for value in self._continuation
+                              if value in available), None)
+            if candidate is not None:
+                return candidate
+        elif self.queue.index + 1 < len(self.queue.tracks):
+            return self.queue.tracks[self.queue.index + 1]
+        return self.queue.tracks[0] if self.repeat and self.queue.tracks else None
 
     def toggle_shuffle(self):
         self._shuffle = not self._shuffle
         if self._shuffle:
-            self._reset_shuffle()
+            self._reset_shuffle(preserve_priority=True)
         self.library.set_setting("shuffle", "on" if self._shuffle else "off")
         self.shuffle_changed.emit(self._shuffle)
         self._prepare_next()
 
-    def _reset_shuffle(self, *, include_current=True):
-        current = self.current.video_id if include_current and self.current else None
+    def _reset_shuffle(self, *, include_current=True, preserve_priority=False):
+        priority = self._shuffle_order.priority.copy() if preserve_priority else []
+        # A preferred recording has another ID; navigation still belongs to its
+        # original queue entry, otherwise shuffle would play the original twice.
+        anchor = self.queue.current or self.current
+        current = anchor.video_id if include_current and anchor else None
         self._shuffle_order.reset([track.video_id for track in self.queue.tracks], current)
+        self._shuffle_order.priority = [value for value in priority
+                                        if value in self._shuffle_order.ids]
 
     def _sync_shuffle(self):
         self._shuffle_order.sync([track.video_id for track in self.queue.tracks])
 
     def _advance_queue(self, step=1):
         if not self.shuffle:
-            return self.queue.advance(step, repeat=self.repeat)
+            track = self._linear_next() if step > 0 else self.queue.advance(step, repeat=self.repeat)
+            if track is not None:
+                self.queue.index = next(index for index, entry in enumerate(self.queue.tracks)
+                                        if entry.video_id == track.video_id)
+                self._continuation = None
+                self._shuffle_order.select(track.video_id)
+            return track
         self._sync_shuffle()
         video_id = self._shuffle_order.previous() if step < 0 else self._shuffle_order.next(self.repeat)
         if video_id is None:
             return None
         self.queue.index = next(index for index, track in enumerate(self.queue.tracks)
                                 if track.video_id == video_id)
+        self._continuation = None
         return self.queue.current
 
     def play_queue(self):
         """Restart the existing queue without replacing or rearranging it."""
         if not self.queue.tracks:
             return
+        self._continuation = None
         self._reset_shuffle(include_current=False)
         if self.shuffle:
             self._advance_queue()
@@ -145,18 +192,116 @@ class Playback(QObject):
         self._prepare_next()
 
     def add(self, track: Track):
-        self.queue.add(track)
+        self.add_many([track])
+
+    def add_many(self, tracks: list[Track]) -> int:
+        """Append distinct IDs with one persistence operation and one notification."""
+        entries = list(tracks)
+        if any(not isinstance(track, Track) for track in entries):
+            raise TypeError("Queue entries must be Track objects")
+        known = {track.video_id for track in self.queue.tracks}
+        added = []
+        for track in entries:
+            if track.video_id not in known:
+                known.add(track.video_id)
+                added.append(track)
+        if not added:
+            return 0
+        self.queue.tracks.extend(added)
+        if self._continuation is not None:
+            self._continuation.extend(track.video_id for track in added)
         self._sync_shuffle()
+        self._save_queue()
+        self._prepare_next()
+        return len(added)
+
+    def remove_many(self, video_ids: list[str]) -> int:
+        """Remove matching IDs atomically, preserving audio and its continuation."""
+        removed_ids = {value for value in video_ids if isinstance(value, str)}
+        before = self.queue.tracks
+        retained = [track for track in before if track.video_id not in removed_ids]
+        removed_count = len(before) - len(retained)
+        if not removed_count:
+            return 0
+        anchor = self.queue.current
+        if anchor is not None and anchor.video_id in removed_ids:
+            self._continuation = [track.video_id for track in before[self.queue.index + 1:]
+                                  if track.video_id not in removed_ids]
+            self.queue = PlayQueue(retained, -1)
+        else:
+            index = (next(i for i, track in enumerate(retained)
+                          if track.video_id == anchor.video_id) if anchor is not None else -1)
+            self.queue = PlayQueue(retained, index)
+            if self._continuation is not None:
+                self._continuation = [value for value in self._continuation
+                                      if value not in removed_ids]
+        self._sync_shuffle()
+        self._save_queue()
+        self._prepare_next()
+        return removed_count
+
+    def reorder_queue(self, video_ids: list[str]) -> bool:
+        """Accept only an exact unique permutation; do not partially apply it."""
+        requested = list(video_ids)
+        entries = {track.video_id: track for track in self.queue.tracks}
+        if (any(not isinstance(value, str) for value in requested)
+                or len(requested) != len(entries) or len(set(requested)) != len(requested)
+                or set(requested) != set(entries)
+                or requested == [track.video_id for track in self.queue.tracks]):
+            return False
+        anchor = self.queue.current
+        self.queue = PlayQueue([entries[value] for value in requested],
+                               requested.index(anchor.video_id) if anchor is not None else -1)
+        if self._continuation is not None:
+            eligible = set(self._continuation)
+            self._continuation = [value for value in requested if value in eligible]
+        self._sync_shuffle()
+        self._save_queue()
+        self._prepare_next()
+        return True
+
+    def play_next(self, track: Track):
+        """Queue a selection immediately next, including while shuffle is on."""
+        if self.current and self.library.preferred_recording(track).video_id == self.current.video_id:
+            return
+        self.queue.insert_next(track)
+        if self._continuation is not None:
+            self._continuation = [track.video_id] + [value for value in self._continuation
+                                                    if value != track.video_id]
+        self._sync_shuffle()
+        self._shuffle_order.prioritize(track.video_id)
+        self._save_queue()
+        self._prepare_next()
+
+    def move_queue(self, source: int | str, destination: int) -> bool:
+        """Move an entry by ID (preferred for UI) or index to a final index."""
+        if not self.queue.move(source, destination):
+            return False
+        if self._continuation is not None:
+            eligible = set(self._continuation)
+            self._continuation = [track.video_id for track in self.queue.tracks
+                                  if track.video_id in eligible]
+        self._sync_shuffle()
+        self._save_queue()
+        self._prepare_next()
+        return True
+
+    def clear_queue(self):
+        """Clear the list without stopping, seeking, or changing current audio."""
+        self.queue = PlayQueue()
+        self._continuation = None
+        self._reset_shuffle()
+        self._prefetch_next = None
         self._save_queue()
 
     def play(self, track: Track):
         # A direct selection is not an implicit request to enqueue it.
         self._current = track
+        self._continuation = None
         self.queue.index = next((i for i, queued in enumerate(self.queue.tracks)
                                  if queued.video_id == track.video_id), -1)
-        if self.shuffle:
-            self._sync_shuffle()
-            self._shuffle_order.select(track.video_id)
+        self._sync_shuffle()
+        self._shuffle_order.select(track.video_id)
         self._save_queue()
         self._open_current()
 
@@ -168,6 +313,7 @@ class Playback(QObject):
         if selected is None:
             return
         self.queue = PlayQueue(unique, selected)
+        self._continuation = None
         self._current = self.queue.current
         self._reset_shuffle()
         self._save_queue()
@@ -183,6 +329,8 @@ class Playback(QObject):
     def _save_queue(self):
         self.library.save_queue(self.queue)
         self.library.save_current(self.current)
+        self.library.set_setting("queue_next_ids", json.dumps(self._shuffle_order.priority))
+        self.library.set_setting("queue_continuation", json.dumps(self._continuation))
         self.queue_changed.emit()
 
     def _open_current(self):
@@ -268,11 +416,9 @@ class Playback(QObject):
             if candidate is not None:
                 self.prefetch(candidate)
             return
-        index = self.queue.index + 1
-        if index < len(self.queue.tracks):
-            self.prefetch(self.queue.tracks[index])
-        elif self.repeat and self.queue.tracks:
-            self.prefetch(self.queue.tracks[0])
+        candidate = self._linear_next()
+        if candidate is not None:
+            self.prefetch(candidate)
 
     def _resolved(self, token: str, stream: AudioStream):
         self._tasks.pop(token, None)
@@ -332,12 +478,8 @@ class Playback(QObject):
             self._open_current()
 
     def remove(self, index: int):
-        was_current = self.queue.remove(index)
-        if was_current:
-            # Removing a queue entry does not stop the audio already playing.
-            self.queue.index = -1
-        self._sync_shuffle()
-        self._save_queue()
+        if 0 <= index < len(self.queue.tracks):
+            self.remove_many([self.queue.tracks[index].video_id])
 
     def stop(self):
         self._token = uuid.uuid4().hex  # Invalidate any late network result.

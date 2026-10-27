@@ -1,0 +1,36 @@
+{
+  "title": "Music4All-Onion",
+  "creators": [
+    {
+      "name": "Moscati, Marta",
+      "affiliation": "Johannes Kepler University Linz, Austria",
+      "orcid": "0000-0002-5541-4919"
+    },
+    {
+      "name": "Parada-Cabaleiro, Emilia",
+      "affiliation": "Johannes Kepler University Linz and Linz Institute of Technology, Austria",
+      "orcid": "0000-0003-1843-3632"
+    },
+    {
+      "name": "Deldjoo, Yashar",
+      "affiliation": "Polytechnic University of Bari, Italy",
+      "orcid": "0000-0002-6767-358X"
+    },
+    {
+      "name": "Zangerle, Eva",
+      "affiliation": "University of Innsbruck, Austria",
+      "orcid": "0000-0003-3195-8273"
+    },
+    {
+      "name": "Schedl, Markus",
+      "affiliation": "Johannes Kepler University Linz and Linz Institute of Technology, Austria",
+      "orcid": "0000-0003-1706-3406"
+    }
+  ],
+  "doi": "10.5281/zenodo.15394646",
+  "license": "CC-BY-4.0",
+  "metadata_mirror": "https://huggingface.co/datasets/Leon299/music4all/tree/c409d02",
+  "changes": "Subset preparation, model training, and numerical model exports; metadata retained for matching. Kotlin package exports user tower and numeric CatBoost to ONNX; catalog vectors use a sparse binary representation. No original user interaction records, audio, or lyrics are included.",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "publication": "https://doi.org/10.1145/3511808.3557656"
+}

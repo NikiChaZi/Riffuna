@@ -1,0 +1,1 @@
+{"name":"riffuna-youtube-runtime","version":"0.2.0","private":true,"type":"module","dependencies":{"undici":"8.12.3","youtubei.js":"18.3.0"}}

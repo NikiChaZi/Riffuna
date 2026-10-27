@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["RIFFUNA_AUDIO_BACKEND"] = "qt"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import QRectF, Qt
@@ -83,6 +84,7 @@ def main():
     records = fixture_tracks()
     with tempfile.TemporaryDirectory(prefix="riffuna-ui-") as temporary:
         library = Library(Path(temporary) / "fixtures.sqlite3")
+        library.set_setting("reduced_motion", "1")
         for track in reversed(records):
             library.record_play(track)
         for track in records[:3]:
@@ -91,6 +93,7 @@ def main():
         library.save_current(records[0])
         for name, selected in (("Ночная дорога", records[:4]), ("Ремиксы и slowed", records[2:])):
             collection = library.create_playlist(name)
+            library.update_playlist_details(collection, name, "Проверочные данные для визуального аудита; это не реальная библиотека.")
             for track in selected:
                 library.add_to_playlist(collection, track)
         window = MainWindow(library, OfflineSource())
@@ -102,19 +105,44 @@ def main():
         window.resize(1280, 800)
         window.show()
 
+        captured = []
+
         def capture(name):
             app.processEvents()
             window.clearFocus()
             window.search_input.clearFocus()
             app.processEvents()
-            if not window.grab().save(str(args.output / (name + ".png"))):
+            # Caption lives below the unchanged application image so fixtures
+            # cannot be mistaken for real tracks or a real user's library.
+            screenshot = window.grab()
+            canvas = QPixmap(screenshot.width(), screenshot.height() + 25)
+            canvas.fill(QColor("#111615"))
+            painter = QPainter(canvas)
+            painter.drawPixmap(0, 0, screenshot)
+            painter.setPen(QColor("#C3BBA9"))
+            painter.drawText(10, screenshot.height() + 17,
+                             "OFFLINE QA FIXTURE — вымышленные треки и временная библиотека")
+            painter.end()
+            if not canvas.save(str(args.output / (name + ".png"))):
                 raise RuntimeError("Could not render " + name)
+            captured.append(name)
 
         capture("01-home")
         window.show_view("playlists")
         capture("16-playlists")
         window._show_playlist(library.playlists()[0]["id"])
         capture("17-playlist-tracks")
+        window.track_list.item(0).setSelected(True)
+        window.track_list.item(2).setSelected(True)
+        capture("18-playlist-multi-select")
+        window.list_tools.search_input.setText("Студия")
+        capture("19-playlist-filtered")
+        window.list_tools.search_input.setText("невозможное совпадение")
+        capture("20-playlist-filter-empty")
+        window.list_tools.search_input.clear()
+        window.list_tools.sort_order.setCurrentIndex(window.list_tools.sort_order.findData("artist"))
+        capture("21-playlist-sorted")
+        window.list_tools.sort_order.setCurrentIndex(window.list_tools.sort_order.findData("custom"))
         window.last_query = "вечерний плейлист"
         window.search_results = records
         window._search_limit = 40
@@ -137,6 +165,19 @@ def main():
         window.search_results = records
         window._render_search()
         capture("07-minimum-queue")
+        window.track_list.item(0).setSelected(True)
+        window.track_list.item(2).setSelected(True)
+        for index in (0, 2):
+            window.queue_list.item(index).setSelected(True)
+        capture("22-minimum-selected-search-and-queue")
+        window._show_playlist(library.playlists()[0]["id"])
+        for index in (0, 2):
+            window.track_list.item(index).setSelected(True)
+        capture("23-minimum-selected-playlist-and-queue")
+        window.list_tools.search_input.setText("Студия")
+        capture("24-minimum-filtered-playlist-and-queue")
+        window.list_tools.search_input.clear()
+        window.show_view("search")
         window._hide_queue()
         capture("08-minimum-no-queue")
         window.queue_toggle.setChecked(True)
@@ -169,7 +210,7 @@ def main():
         window.playback.pool.waitForDone(2000)
         app.processEvents()
         library.close()
-    print(f"Rendered 17 offline fixture screens to {args.output}")
+    print(f"Rendered {len(captured)} offline fixture screens to {args.output}")
 
 
 if __name__ == "__main__":

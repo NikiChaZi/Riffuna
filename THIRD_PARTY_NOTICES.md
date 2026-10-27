@@ -2,9 +2,17 @@
 
 New Riffuna changes from 0.1.3 are licensed under PolyForm Noncommercial 1.0.0 (LICENSE). The previously published MIT-licensed code retains its original permissions and notice (LICENSES/MIT-legacy.txt). See LICENSING.md. Dependencies retain their own licenses; the noncommercial restriction does not relicense or limit rights granted by third-party libraries.
 
-Qt, PySide6 and Shiboken6 6.10.2 declare LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only in the official distribution metadata. These dynamically linked libraries are unmodified. License texts: LICENSES/. Upstream sources and build instructions (v6.10.2): https://code.qt.io/pyside/pyside-setup.git/ and https://code.qt.io/qt/ .
+## Current Kotlin desktop package
 
-Python: LICENSES/LICENSE.txt in the one-file application resources. Other bundled dependency notices, including yt-dlp, ytmusicapi, requests and PyInstaller, are provided in their bundled distribution metadata. The release also includes a separate license and source-reference archive. External Node.js is not included. No music or YouTube artwork is included.
+The application includes Kotlin/Compose Multiplatform and its JVM dependencies, a bundled Java runtime, SQLite JDBC, JNA/JNA Platform, ONNX Runtime, Bouncy Castle, Reorderable and SLF4J. Dependency JARs retain their upstream META-INF notices; Java's notices are in the runtime legal directory. Versions are pinned in the Gradle files.
+
+Node.js v24.15.0 is included for the YouTube source component. Its complete upstream license and bundled-component notices are in `LICENSES/Node-v24.15.0-LICENSE.txt`. Source: https://github.com/nodejs/node/tree/v24.15.0 .
+
+YouTube.js 18.3.0, Undici 8.12.3 and their locked npm dependencies are included under `source-runtime/node_modules` with their upstream notices. YouTube.js and Undici use the MIT license. Undici source: https://github.com/nodejs/undici . YouTube.js source: https://github.com/LuanRT/YouTube.js . The application's own JSON-lines wrapper is maintained in `source-runtime/index.mjs`.
+
+Python, PySide6, Qt, Shiboken, yt-dlp and PyInstaller are not included in the Kotlin desktop runtime. Previous Python/Qt sources remain in this repository for development history. Their third-party permissions and previously distributed notices remain applicable to those historical packages.
+
+Music, artwork and lyrics fetched during use are not distributed as part of the application package. The local recommendation model uses Music4All-Onion numerical features and derived vectors. Dataset attribution, source DOI, CC-BY-4.0 license link, metadata provenance and transformations are included in `LICENSES/Music4All-Onion-ATTRIBUTION.json` and `music-model/ATTRIBUTION.json`. Third-party data and component rights remain separate from Riffuna's own code license. Original interaction records, music and lyrics are not bundled.
 
 ## libmpv / FFmpeg audio playback
 

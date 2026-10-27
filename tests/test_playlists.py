@@ -47,7 +47,7 @@ def test_v1_migration_preserves_existing_tracks_likes_history_queue_current_and_
     old.close()
     library = Library(path)
     try:
-        assert library.db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert library.db.execute("PRAGMA user_version").fetchone()[0] == 3
         assert library.playlists() == []
         assert library.liked_tracks() == [a]
         assert library.history() == [b, a]
@@ -141,7 +141,7 @@ def test_deduplication_removal_reordering_thumbnail_and_reopening_preserve_order
         assert ids(reopened, playlist) == [a.video_id, c.video_id, b.video_id]
         assert positions(reopened, playlist) == [0, 1, 2]
         assert reopened.playlists()[0]["name"] == "Saved mix"
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 3
         reopened.remove_from_playlist(playlist, a.video_id)
         reopened.remove_from_playlist(playlist, c.video_id)
         reopened.remove_from_playlist(playlist, b.video_id)

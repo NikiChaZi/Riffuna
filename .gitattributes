@@ -3,3 +3,11 @@
 *.md text eol=lf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+
+*.kt text eol=lf
+*.kts text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+gradlew text eol=lf
+# Preserve the complete upstream notice verbatim.
+LICENSES/Node-v24.15.0-LICENSE.txt -text -whitespace

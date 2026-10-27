@@ -53,7 +53,8 @@ class Library:
             self.db.execute("""
                 CREATE TABLE IF NOT EXISTS user_playlists (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 100)
+                    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 100),
+                    description TEXT NOT NULL DEFAULT ''
                 )
             """)
             self.db.execute("""
@@ -65,8 +66,11 @@ class Library:
                     UNIQUE (playlist_id, position)
                 )
             """)
-            if version < 2:
-                self.db.execute("PRAGMA user_version = 2")
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(user_playlists)")}
+            if "description" not in columns:
+                self.db.execute("ALTER TABLE user_playlists ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+            if version < 3:
+                self.db.execute("PRAGMA user_version = 3")
 
     @staticmethod
     def _playlist_name(name: str) -> str:
@@ -104,6 +108,81 @@ class Library:
         self._require_playlist(playlist_id)
         with self.db:
             self.db.execute("UPDATE user_playlists SET name=? WHERE id=?", (name, playlist_id))
+
+    def playlist_details(self, playlist_id: int) -> dict:
+        """Read editable details without changing the existing collection contract."""
+        self._require_playlist(playlist_id)
+        result = next(p for p in self.playlists() if p["id"] == playlist_id)
+        result["description"] = self.db.execute(
+            "SELECT description FROM user_playlists WHERE id=?", (playlist_id,)).fetchone()[0]
+        return result
+
+    @staticmethod
+    def _playlist_description(description: str) -> str:
+        if not isinstance(description, str) or len(description) > 2000:
+            raise ValueError("Playlist description must contain at most 2000 characters")
+        return description.strip()
+
+    def update_playlist_details(self, playlist_id: int, name: str, description: str = "") -> None:
+        name = self._playlist_name(name)
+        description = self._playlist_description(description)
+        self._require_playlist(playlist_id)
+        with self.db:
+            self.db.execute("UPDATE user_playlists SET name=?, description=? WHERE id=?",
+                            (name, description, playlist_id))
+
+    def duplicate_playlist(self, playlist_id: int, name: str | None = None) -> int:
+        """Copy membership and details atomically; likes/history are independent."""
+        details = self.playlist_details(playlist_id)
+        suffix = " — копия"
+        name = self._playlist_name(name if name is not None else details["name"][:100-len(suffix)] + suffix)
+        tracks = self.playlist_tracks(playlist_id)
+        with self.db:
+            cursor = self.db.execute("INSERT INTO user_playlists(name, description) VALUES (?, ?)",
+                                     (name, details["description"]))
+            new_id = int(cursor.lastrowid)
+            self.db.executemany("INSERT INTO playlist_items(playlist_id, video_id, position) VALUES (?, ?, ?)",
+                                ((new_id, track.video_id, position) for position, track in enumerate(tracks)))
+        return new_id
+
+    def add_tracks_to_playlist(self, playlist_id: int, tracks: list[Track]) -> int:
+        """Append unique records in supplied order in a single transaction."""
+        existing = self._playlist_order(playlist_id)
+        supplied = list(tracks)
+        if any(not isinstance(track, Track) for track in supplied):
+            raise ValueError("Playlist entries must be tracks")
+        known = set(existing)
+        additions = []
+        for track in supplied:
+            if track.video_id not in known:
+                known.add(track.video_id)
+                additions.append(track)
+        with self.db:
+            for position, track in enumerate(additions, len(existing)):
+                self._upsert(track)
+                self.db.execute("INSERT INTO playlist_items(playlist_id, video_id, position) VALUES (?, ?, ?)",
+                                (playlist_id, track.video_id, position))
+        return len(additions)
+
+    def remove_tracks_from_playlist(self, playlist_id: int, video_ids: list[str]) -> int:
+        """Remove membership only, retaining all unrelated library data."""
+        order = self._playlist_order(playlist_id)
+        supplied = list(video_ids)
+        if any(not isinstance(value, str) for value in supplied):
+            raise ValueError("Playlist IDs must be text")
+        removed = set(supplied)
+        remaining = [value for value in order if value not in removed]
+        self._replace_playlist_order(playlist_id, remaining)
+        return len(order) - len(remaining)
+
+    def reorder_playlist(self, playlist_id: int, video_ids: list[str]) -> None:
+        """Persist an exact permutation; reject missing, unknown or duplicate IDs."""
+        existing = self._playlist_order(playlist_id)
+        supplied = list(video_ids)
+        if (any(not isinstance(value, str) for value in supplied)
+                or len(supplied) != len(existing) or set(supplied) != set(existing)):
+            raise ValueError("Playlist order must contain every existing ID exactly once")
+        self._replace_playlist_order(playlist_id, supplied)
 
     def delete_playlist(self, playlist_id: int) -> None:
         """Delete only playlist membership, retaining tracks, likes and history."""

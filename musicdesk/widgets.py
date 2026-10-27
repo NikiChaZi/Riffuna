@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButto
 
 from .icons import icon
 from .models import Track, time_label
+from .surface_motion import attach_surface_motion
 
 
 def label(text: str, name: str = "", parent=None) -> QLabel:
@@ -28,6 +29,7 @@ def icon_button(name: str, tooltip: str, size: int = 36, parent=None) -> QPushBu
     button.setToolTip(tooltip)
     button.setAccessibleName(tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
+    attach_surface_motion(button)
     return button
 
 
@@ -84,6 +86,7 @@ class QueryCard(QPushButton):
         self.setAccessibleName("Искать: " + title + ". " + subtitle)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(88)
+        attach_surface_motion(self)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(12)
@@ -284,6 +287,7 @@ class Cover(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         rect = QRectF(self.rect())
         path = QPainterPath()
         path.addRoundedRect(rect, 6, 6)
@@ -318,17 +322,20 @@ class TrackRow(QFrame):
         self.setObjectName("trackRow")
         self.setProperty("current", False)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 7, 8, 7)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(10)
         self.play_button = icon_button("play", "Слушать: " + track.title, 32)
         self.play_button.clicked.connect(lambda: self.play_requested.emit(track))
-        layout.addWidget(self.play_button)
-        cover = Cover(artwork, 44, seed=track.video_id)
+        cover = Cover(artwork, 48, seed=track.video_id)
         cover.set_url(track.thumbnail)
+        self.play_button.setParent(cover)
+        self.play_button.setObjectName("rowPlay")
+        self.play_button.move(8, 8)
         layout.addWidget(cover)
         texts = QVBoxLayout()
         texts.setSpacing(3)
-        texts.addWidget(ElidedLabel(track.title, "trackTitle"))
+        self.title = ElidedLabel(track.title, "rowTitle")
+        texts.addWidget(self.title)
         metadata = track.artist + " · YouTube"
         if track.view_count is not None and track.view_count >= 0:
             views = f"{track.view_count:,}".replace(",", "\u202f")
@@ -344,8 +351,8 @@ class TrackRow(QFrame):
         metadata_row.addWidget(self.metadata, 1)
         texts.addLayout(metadata_row)
         layout.addLayout(texts, 1)
-        duration = label(time_label(track.duration) if track.duration else "—", "muted")
-        duration.setFixedWidth(47)
+        duration = label(time_label(track.duration) if track.duration else "—", "rowDuration")
+        duration.setFixedWidth(42)
         duration.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(duration)
         self.like_button = icon_button("heart", "Нравится: " + track.title)
@@ -400,8 +407,10 @@ class QueueRow(QFrame):
             layout.addWidget(cover)
         texts = QVBoxLayout()
         texts.setSpacing(3)
-        texts.addWidget(ElidedLabel(track.title, "trackTitle"))
-        texts.addWidget(ElidedLabel(track.artist, "tiny"))
+        for text, name in ((track.title, "trackTitle"), (track.artist, "tiny")):
+            copy = ElidedLabel(text, name)
+            copy.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            texts.addWidget(copy)
         layout.addLayout(texts, 1)
         remove = icon_button("close", "Убрать из очереди: " + track.title, 28)
         remove.clicked.connect(lambda: self.remove_requested.emit(index))

@@ -3,12 +3,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import replace
 
-from PySide6.QtCore import QSize, Qt, QThreadPool, QUrl
+from PySide6.QtCore import QSize, Qt, QThreadPool, QUrl, QSignalBlocker, QItemSelectionModel
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QAbstractItemView, QComboBox, QFrame, QLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QPushButton, QScrollArea, QInputDialog, QMessageBox,
-    QStackedWidget, QVBoxLayout, QWidget, QFileDialog,
+    QStackedWidget, QVBoxLayout, QWidget, QFileDialog, QApplication, QDialog, QDialogButtonBox, QTextEdit,
 )
 
 from .version_dialog import RecordingVersionsDialog
@@ -23,6 +23,9 @@ from .appearance import app_icon
 from .branding import APP_NAME
 from .icons import icon
 from .models import Track, time_label
+from .collection_tools import collection_tracks, collection_summary
+from .list_tools import ListTools
+from .track_list import TrackList
 from .library_views import HomePage, PlaylistPage
 from .playback import Playback
 from .storage import Library
@@ -53,6 +56,13 @@ class MainWindow(QMainWindow):
         self.rows: list[TrackRow] = []
         self.liked = library.liked_ids()
         self._playlist_id = None
+        self._local_states = {}
+        self._collection_source = []
+        self._collection_title = ""
+        self._collection_subtitle = ""
+        self._navigation = [("home", None)]
+        self._navigation_index = 0
+        self._restoring_route = False
         self.view = "home"
         self.last_query = ""
         self._shutting_down = False
@@ -70,12 +80,31 @@ class MainWindow(QMainWindow):
         self._build()
         self._connect()
         self._build_expanded_player()
+        from .surface_motion import install_surface_motion
+        install_surface_motion(self, self.motion_policy)
         self._refresh_queue()
         self._refresh_likes()
         self._shuffle_changed(self.playback.shuffle)
         self._on_track(self.playback.current)
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self._focus_search)
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self._focus_search)
+        self._transport_shortcuts = []
+        for sequence, callback in (
+            ("Alt+Left", lambda: self._navigate(-1)),
+            ("Alt+Right", lambda: self._navigate(1)),
+            ("Ctrl+Right", self.playback.next),
+            ("Ctrl+Left", self.playback.previous),
+            ("Ctrl+Shift+S", self.playback.toggle_shuffle),
+            ("Ctrl+Shift+R", self.playback.cycle_repeat),
+            ("Ctrl+Shift+F", self._focus_collection),
+            ("Ctrl+Q", self._toggle_queue),
+        ):
+            shortcut = QShortcut(QKeySequence(sequence), self, activated=callback)
+            if sequence in {"Ctrl+Right", "Ctrl+Left", "Ctrl+Shift+S", "Ctrl+Shift+R"}:
+                self._transport_shortcuts.append(shortcut)
+        QApplication.instance().focusChanged.connect(self._shortcut_focus_changed)
+        self._shortcut_focus_changed(None, self.focusWidget())
+        self._sync_navigation()
 
     def _build(self):
         root = QWidget()
@@ -97,7 +126,18 @@ class MainWindow(QMainWindow):
         panel.setObjectName("sidebar")
         self.sidebar_panel = panel
         panel.setFixedWidth(192)
-        layout = QVBoxLayout(panel)
+        shell = QVBoxLayout(panel)
+        shell.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        content = QWidget()
+        content.setObjectName("sidebarContent")
+        layout = QVBoxLayout(content)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        scroll.setWidget(content)
+        shell.addWidget(scroll)
         layout.setContentsMargins(12, 24, 12, 20)
         layout.setSpacing(7)
         brand = QHBoxLayout()
@@ -118,6 +158,7 @@ class MainWindow(QMainWindow):
                 layout.addWidget(label("БИБЛИОТЕКА", "eyebrow"))
             button = QPushButton(title)
             button.setObjectName("nav")
+            button.setMinimumHeight(40)
             button.setIcon(icon(glyph))
             button.setIconSize(QSize(19, 19))
             button.setCheckable(True)
@@ -133,6 +174,12 @@ class MainWindow(QMainWindow):
         layout.addSpacing(18)
         layout.addWidget(label("Лайки и история\nхранятся на этом ПК", "tiny"))
         layout.addSpacing(14)
+        keys = QPushButton("Клавиши")
+        keys.setAccessibleName("Горячие клавиши")
+        keys.setMinimumHeight(38)
+        keys.setObjectName("nav")
+        keys.clicked.connect(self._show_shortcuts)
+        layout.addWidget(keys)
         layout.addWidget(label("RIFFUNA / " + __version__, "tiny"))
         return panel
 
@@ -144,6 +191,12 @@ class MainWindow(QMainWindow):
         layout.setSpacing(16)
         search_row = QHBoxLayout()
         search_row.setSpacing(9)
+        self.back_button = icon_button("back", "Назад · Alt+←", 32)
+        self.forward_button = icon_button("forward", "Вперёд · Alt+→", 32)
+        self.back_button.clicked.connect(lambda: self._navigate(-1))
+        self.forward_button.clicked.connect(lambda: self._navigate(1))
+        search_row.addWidget(self.back_button)
+        search_row.addWidget(self.forward_button)
         self.search_input = QLineEdit()
         self.search_input.setObjectName("searchInput")
         self.search_input.setPlaceholderText("Трек, исполнитель или ссылка YouTube")
@@ -231,7 +284,17 @@ class MainWindow(QMainWindow):
         search_controls_layout.addStretch()
         results_layout.addWidget(self.search_controls)
         self.results_stack = QStackedWidget()
-        self.track_list = QListWidget()
+        self.list_tools = ListTools()
+        self.list_tools.query_changed.connect(self._collection_filter_changed)
+        self.list_tools.sort_changed.connect(self._collection_sort_changed)
+        self.list_tools.queue_requested.connect(self._enqueue_selected)
+        self.list_tools.playlist_requested.connect(self._selected_playlist_menu)
+        self.list_tools.remove_requested.connect(self._remove_selected)
+        results_layout.addWidget(self.list_tools)
+        self.track_list = TrackList()
+        self.track_list.itemSelectionChanged.connect(self._selection_changed)
+        self.track_list.order_requested.connect(self._reorder_playlist)
+        self.track_list.toggle_requested.connect(self.playback.toggle)
         self.track_list.setSpacing(3)
         self.track_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.track_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -348,7 +411,10 @@ class MainWindow(QMainWindow):
         queue_tools.addWidget(self.queue_save)
         layout.addLayout(queue_tools)
         layout.addWidget(label("СПИСОК ВОСПРОИЗВЕДЕНИЯ", "eyebrow"))
-        self.queue_list = QListWidget()
+        self.queue_list = TrackList()
+        self.queue_list.set_manual_order(True)
+        self.queue_list.order_requested.connect(self._reorder_queue)
+        self.queue_list.toggle_requested.connect(self.playback.toggle)
         self.queue_list.setSpacing(3)
         self.queue_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.queue_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -360,7 +426,24 @@ class MainWindow(QMainWindow):
         self.queue_empty.setWordWrap(True)
         self.queue_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.queue_empty)
-        layout.addWidget(label("Порядок сохранится после перезапуска", "tiny"))
+        queue_actions = QHBoxLayout()
+        self.queue_remove_selected = QPushButton("Убрать")
+        self.queue_remove_selected.setToolTip("Убрать выбранные треки из очереди")
+        self.queue_remove_selected.setAccessibleName("Убрать выбранные треки из очереди")
+        self.queue_remove_selected.clicked.connect(self._remove_queue_selected)
+        self.queue_remove_selected.hide()
+        self.queue_list.itemSelectionChanged.connect(
+            lambda: self.queue_remove_selected.setVisible(bool(self.queue_list.selectedItems())))
+        queue_actions.addWidget(self.queue_remove_selected, 1)
+        self.queue_clear = QPushButton("Очистить")
+        self.queue_clear.setAccessibleName("Очистить очередь")
+        self.queue_clear.setToolTip("Очистить список, продолжая текущий трек")
+        self.queue_clear.clicked.connect(self.playback.clear_queue)
+        queue_actions.addWidget(self.queue_clear)
+        layout.addLayout(queue_actions)
+        hint = label("Перетаскивай треки\nAlt+↑ / ↓ — изменить порядок", "tiny")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         return self.queue_panel
 
     def _player_bar(self) -> QFrame:
@@ -515,7 +598,7 @@ class MainWindow(QMainWindow):
         track = self.playback.current
         if not track or track.video_id != recording_id:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Открыть синхронный текст", "", "Синхронный текст (*.lrc)")
+        path, _ = QFileDialog.getOpenFileName(self, "Открыть синхронный текст", "", "Синхронный текст (*.lrc *.ttml *.xml)")
         if path and self.playback.current and self.playback.current.video_id == recording_id:
             self.lyrics_controller.import_lrc(track, path)
 
@@ -558,7 +641,11 @@ class MainWindow(QMainWindow):
             # The uploader is not the performer credited in the verified title.
             replacement = replace(replacement, artist=original.artist)
         self.library.prefer_recording(original, replacement)
-        self.playback.play(replacement)
+        # Keep the playlist/queue identity; Playback resolves the saved source.
+        anchor = next((track for track in self.playback.queue.tracks
+                       if track.video_id == original.video_id
+                       or self.library.preferred_recording(track).video_id == replacement.video_id), None)
+        self.playback.play(anchor or replacement)
         self._notice("Выбрана другая запись: " + replacement.title)
 
     def _load_recommendations(self):
@@ -686,6 +773,7 @@ class MainWindow(QMainWindow):
         self._search_loading = True
         self._search_error = ""
         self.notice.hide()
+        self._record_route("search")
         self.view = "search"
         self._select_nav()
         self._render_search(rebuild=not self.search_results)
@@ -745,6 +833,8 @@ class MainWindow(QMainWindow):
 
     def _sync_search_controls(self):
         searching = self.view == "search"
+        if hasattr(self, "list_tools"):
+            self.list_tools.setVisible(self.view in {"search", "likes", "history", "playlist"})
         self.playlist_actions.setVisible(self.view == "playlist")
         self.search_controls.setVisible(searching)
         self.search_footer.setVisible(searching and bool(self.search_results))
@@ -765,6 +855,7 @@ class MainWindow(QMainWindow):
         self.search_status.setText(status)
 
     def show_view(self, view: str):
+        self._record_route(view)
         self.view = view
         self.notice.hide()
         self._select_nav()
@@ -793,11 +884,31 @@ class MainWindow(QMainWindow):
 
     def _show_tracks(self, tracks: list[Track], title: str, subtitle: str, preserve_position: bool = False):
         scroll_position = self.track_list.verticalScrollBar().value() if preserve_position else 0
-        selected = self.track_list.currentItem() if preserve_position else None
-        selected_id = selected.data(Qt.ItemDataRole.UserRole).video_id if selected else None
+        current_item = self.track_list.currentItem() if preserve_position else None
+        current_id = current_item.data(Qt.ItemDataRole.UserRole).video_id if current_item else None
+        selected_ids = {item.data(Qt.ItemDataRole.UserRole).video_id for item in self.track_list.selectedItems()} if preserve_position else set()
+        selection_guard = QSignalBlocker(self.track_list)
+        self._collection_source = list(tracks)
+        self._collection_title, self._collection_subtitle = title, subtitle
+        context = self.view if self.view in {"likes", "history", "playlist"} else "search"
+        self.list_tools.set_context(context)
+        query, order = self._local_states.get(self._collection_key(), ("", "custom"))
+        if context == "search":
+            query, order = "", "custom"
+        self.list_tools.reset(query, order)
+        if context != "search":
+            original_count = len(tracks)
+            tracks = collection_tracks(tracks, query, order)
+            summary = collection_summary(tracks)
+            counts = f"{summary['count']} из {original_count} треков" if query else f"Треков: {summary['count']}"
+            if summary['duration']:
+                counts += " · " + time_label(summary['duration'])
+            subtitle = (subtitle + "\n" if subtitle else "") + counts
+        self.track_list.set_manual_order(context == "playlist" and not query and order == "custom")
         self.stack.setCurrentWidget(self.results_page)
         self.page_title.set_full_text(title)
         self.page_subtitle.setText(subtitle)
+        self.page_subtitle.setToolTip(subtitle)
         section_glyph, section_tone = {"likes": ("heart_fill", "coral"), "history": ("history", "sage"), "playlist": ("playlist", "sand")}.get(self.view, ("search", "sand"))
         self.section_cover.setPixmap(tile_pixmap(section_glyph, 64, section_tone))
         self.page_kind.setText("ТВОЯ БИБЛИОТЕКА" if self.view in {"likes", "history", "playlist"} else "ПОИСК В YOUTUBE")
@@ -811,6 +922,9 @@ class MainWindow(QMainWindow):
                 "history": ("Пока тихо", "История появится после первого воспроизведения", "history"),
                 "playlist": ("Собери свой плейлист", "В поиске нажми правой кнопкой на трек и выбери «В плейлист»", "playlist"),
             }
+            if query:
+                self._empty_state("В этом списке ничего не найдено", "Измени запрос или очисти фильтр", "search")
+                return
             self._empty_state(*states.get(self.view, ("Ничего не найдено" if self.last_query else "Что послушаем?",
                                                        "Попробуй другое название или вставь ссылку на YouTube", "search")))
             return
@@ -824,12 +938,16 @@ class MainWindow(QMainWindow):
             row.play_requested.connect(self._play_visible_track)
             row.like_requested.connect(self.toggle_like)
             row.add_requested.connect(self._enqueue)
-            row.set_current(bool(self.playback.current and self.playback.current.video_id == track.video_id))
+            row.set_current(self._is_current(track))
             self.rows.append(row)
             self.track_list.setItemWidget(item, row)
-            if track.video_id == selected_id:
-                self.track_list.setCurrentItem(item)
+            if track.video_id in selected_ids:
+                item.setSelected(True)
+            if track.video_id == current_id:
+                self.track_list.setCurrentItem(item, QItemSelectionModel.SelectionFlag.NoUpdate)
+        self.track_list.doItemsLayout()
         self.track_list.verticalScrollBar().setValue(scroll_position)
+        self._selection_changed()
 
     def _empty_state(self, title: str, message: str, glyph: str, retry: bool = False):
         self.empty_title.setText(title)
@@ -844,7 +962,7 @@ class MainWindow(QMainWindow):
         self._notice("Добавлено в очередь: " + track.title)
 
     def _play_visible_track(self, track):
-        if self.view == "playlist":
+        if self.view in {"playlist", "likes"}:
             self.playback.play_from(self.visible_tracks, track)
         else:
             self.playback.play(track)
@@ -855,6 +973,13 @@ class MainWindow(QMainWindow):
     def _track_menu(self, position):
         item = self.track_list.itemAt(position)
         if item is not None:
+            if not item.isSelected():
+                self.track_list.setCurrentItem(item)
+            if len(self.track_list.selectedItems()) > 1:
+                menu = self._batch_track_menu(self._selected_tracks())
+                menu.exec(self.track_list.viewport().mapToGlobal(position))
+                menu.deleteLater()
+                return
             menu = self._make_track_menu(item.data(Qt.ItemDataRole.UserRole),
                                          self._playlist_id if self.view == "playlist" else None)
             menu.exec(self.track_list.viewport().mapToGlobal(position))
@@ -863,17 +988,36 @@ class MainWindow(QMainWindow):
     def _queue_track_menu(self, position):
         item = self.queue_list.itemAt(position)
         if item is not None:
-            self._track_popup(item.data(Qt.ItemDataRole.UserRole), self.queue_list.viewport().mapToGlobal(position))
+            track = item.data(Qt.ItemDataRole.UserRole)
+            menu = self._make_track_menu(track)
+            menu.addSeparator()
+            index = self.queue_list.row(item)
+            up = menu.addAction("Выше в очереди", lambda: self.playback.move_queue(track.video_id, index - 1))
+            up.setEnabled(index > 0)
+            down = menu.addAction("Ниже в очереди", lambda: self.playback.move_queue(track.video_id, index + 1))
+            down.setEnabled(index < self.queue_list.count() - 1)
+            menu.addAction("Убрать из очереди", lambda: self._remove_queue_id(track.video_id))
+            menu.exec(self.queue_list.viewport().mapToGlobal(position))
+            menu.deleteLater()
 
     def _track_popup(self, track, position):
         menu = self._make_track_menu(track)
         menu.exec(position)
         menu.deleteLater()
 
+    def _play_context_track(self, track, playlist_context):
+        if playlist_context is not None:
+            records = (self.visible_tracks if self.view == "playlist" and self._playlist_id == playlist_context
+                       else self.library.playlist_tracks(playlist_context))
+            self.playback.play_from(records, track)
+        elif self.view == "likes" and any(entry.video_id == track.video_id for entry in self.visible_tracks):
+            self.playback.play_from(self.visible_tracks, track)
+        else:
+            self.playback.play(track)
+
     def _make_track_menu(self, track, playlist_context=None):
         menu = QMenu(self)
-        menu.addAction("Слушать", lambda: self.playback.play_from(self.library.playlist_tracks(playlist_context), track)
-                       if playlist_context is not None else self.playback.play(track))
+        menu.addAction("Слушать", lambda: self._play_context_track(track, playlist_context))
         menu.addAction("В очередь", lambda: self._enqueue(track))
         menu.addAction("Убрать лайк" if track.video_id in self.liked else "Мне нравится", lambda: self.toggle_like(track))
         playlists = menu.addMenu("В плейлист")
@@ -892,6 +1036,9 @@ class MainWindow(QMainWindow):
             down.setEnabled(0 <= index < len(records) - 1)
             menu.addAction("Убрать из плейлиста", lambda: self._remove_from_playlist(playlist_context, track))
         menu.addSeparator()
+        menu.addAction("Слушать следующим", lambda: self._play_next(track))
+        menu.addAction("Найти исполнителя", lambda: self.search_query(track.artist))
+        menu.addAction("Копировать ссылку", lambda: QApplication.clipboard().setText(track.url))
         menu.addAction("Другие записи…", lambda: self._show_versions(track))
         menu.addAction("Открыть на YouTube", lambda: QDesktopServices.openUrl(QUrl(track.url)))
         return menu
@@ -900,13 +1047,16 @@ class MainWindow(QMainWindow):
         collection = next((item for item in self.library.playlists() if item["id"] == playlist_id), None)
         if collection is None:
             return
+        self._record_route("playlist", playlist_id)
         self._playlist_id = playlist_id
         self.view = "playlist"
         self.notice.hide()
         self._select_nav()
         self._sync_search_controls()
+        details = self.library.playlist_details(playlist_id)
         self._show_tracks(self.library.playlist_tracks(playlist_id), collection["name"],
-                          f"Треков: {collection['track_count']}", preserve_position=preserve_position)
+                          details["description"].replace("\n", " ")[:180], preserve_position=preserve_position)
+        self.page_subtitle.setToolTip(details["description"])
 
     def _create_playlist(self, track=None, from_queue=False):
         name, accepted = QInputDialog.getText(self, "Новый плейлист", "Название")
@@ -918,8 +1068,7 @@ class MainWindow(QMainWindow):
             self._notice("Введи название от 1 до 100 символов.", error=True)
             return
         records = list(self.playback.queue.tracks) if from_queue else [track] if track is not None else []
-        for record in records:
-            self.library.add_to_playlist(playlist_id, record)
+        self.library.add_tracks_to_playlist(playlist_id, records)
         self._refresh_home()
         self._show_playlist(playlist_id)
 
@@ -945,6 +1094,9 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.addAction("Слушать всё", lambda: self.playback.play_all(self.library.playlist_tracks(playlist_id)))
         menu.addAction("Переименовать…", lambda: self._rename_playlist(playlist_id))
+        menu.addAction("Изменить описание…", lambda: self._edit_playlist_description(playlist_id))
+        menu.addAction("Создать копию", lambda: self._duplicate_playlist(playlist_id))
+        menu.addAction("Добавить всё в очередь", lambda: self._enqueue_tracks(self.library.playlist_tracks(playlist_id)))
         menu.addSeparator()
         menu.addAction("Удалить плейлист…", lambda: self._delete_playlist(playlist_id))
         menu.exec(position)
@@ -984,7 +1136,7 @@ class MainWindow(QMainWindow):
         self.library.like(track, track.video_id not in self.liked)
         self._refresh_likes()
         if self.view == "likes":
-            self.show_view("likes")
+            self._show_tracks(self.library.liked_tracks(), "Мне нравится", "Треки, которые хочется услышать снова", preserve_position=True)
 
     def _like_current(self):
         if self.playback.current:
@@ -1019,11 +1171,15 @@ class MainWindow(QMainWindow):
 
     def _refresh_queue(self):
         scroll_position = self.queue_list.verticalScrollBar().value()
-        selected = self.queue_list.currentItem()
-        selected_id = selected.data(Qt.ItemDataRole.UserRole).video_id if selected else None
+        current_item = self.queue_list.currentItem()
+        current_id = current_item.data(Qt.ItemDataRole.UserRole).video_id if current_item else None
+        selected_ids = {item.data(Qt.ItemDataRole.UserRole).video_id for item in self.queue_list.selectedItems()}
+        selection_guard = QSignalBlocker(self.queue_list)
         self.queue_list.clear()
         queue = self.playback.queue
         self.queue_caption.setText(str(len(queue.tracks)))
+        self.queue_caption.setToolTip("Общая длительность: " + time_label(collection_summary(queue.tracks)["duration"]))
+        self.queue_clear.setEnabled(bool(queue.tracks))
         self.queue_play.setEnabled(bool(queue.tracks))
         self.queue_save.setEnabled(bool(queue.tracks))
         self.queue_shuffle.setEnabled(bool(queue.tracks))
@@ -1037,14 +1193,23 @@ class MainWindow(QMainWindow):
             row.play_requested.connect(self.playback.play)
             row.remove_requested.connect(self.playback.remove)
             self.queue_list.setItemWidget(item, row)
-            if track.video_id == selected_id:
-                self.queue_list.setCurrentItem(item)
+            if track.video_id in selected_ids:
+                item.setSelected(True)
+            if track.video_id == current_id:
+                self.queue_list.setCurrentItem(item, QItemSelectionModel.SelectionFlag.NoUpdate)
+        self.queue_list._selection_surfaces()
+        self.queue_remove_selected.setVisible(bool(self.queue_list.selectedItems()))
         self.queue_list.doItemsLayout()
         self.queue_list.verticalScrollBar().setValue(scroll_position)
         self.play_button.setEnabled(bool(queue.tracks) or self.playback.current is not None)
         self.previous_button.setEnabled(queue.index > 0 or self.playback.current is not None)
         self.next_button.setEnabled(self.playback.can_next)
         self._refresh_home()
+
+    def _is_current(self, track):
+        current = self.playback.current
+        return bool(current and (track.video_id == current.video_id
+                    or self.library.preferred_recording(track).video_id == current.video_id))
 
     def _on_track(self, track: Track | None):
         self.notice.hide()
@@ -1064,7 +1229,7 @@ class MainWindow(QMainWindow):
         self.total.setText(time_label(track.duration) if track else "0:00")
         self._refresh_likes()
         for row in self.rows:
-            row.set_current(bool(track and row.track.video_id == track.video_id))
+            row.set_current(self._is_current(row.track))
 
     def _on_state(self, state: str):
         playing = state in {"playing", "loading"} and self.playback._want_play
@@ -1091,6 +1256,203 @@ class MainWindow(QMainWindow):
             self._show_tracks(self.library.history(), "История", "Последние прослушанные записи",
                               preserve_position=True)
 
+    def _collection_key(self):
+        return (self.view, self._playlist_id if self.view == "playlist" else None)
+
+    def _collection_filter_changed(self, query):
+        _, order = self._local_states.get(self._collection_key(), ("", "custom"))
+        self._local_states[self._collection_key()] = (query, order)
+        self._show_tracks(self._collection_source, self._collection_title, self._collection_subtitle, True)
+
+    def _collection_sort_changed(self, order):
+        query, _ = self._local_states.get(self._collection_key(), ("", "custom"))
+        self._local_states[self._collection_key()] = (query, order)
+        self._show_tracks(self._collection_source, self._collection_title, self._collection_subtitle, True)
+
+    def _selected_tracks(self):
+        return [self.track_list.item(index).data(Qt.ItemDataRole.UserRole)
+                for index in range(self.track_list.count()) if self.track_list.item(index).isSelected()]
+
+    def _selection_changed(self):
+        self.track_list._selection_surfaces()
+        if hasattr(self, "list_tools"):
+            self.list_tools.set_selection_count(len(self.track_list.selectedItems()))
+
+    def _enqueue_tracks(self, tracks):
+        count = self.playback.add_many(tracks)
+        self._notice(f"Добавлено в очередь: {count}")
+
+    def _enqueue_selected(self):
+        self._enqueue_tracks(self._selected_tracks())
+
+    def _playlist_target_menu(self, tracks):
+        menu = QMenu(self)
+        for playlist in self.library.playlists():
+            menu.addAction(playlist["name"], lambda checked=False, key=playlist["id"]: self._save_tracks_to_playlist(key, tracks))
+        menu.addSeparator()
+        menu.addAction("Новый плейлист…", lambda: self._new_playlist_with_tracks(tracks))
+        return menu
+
+    def _selected_playlist_menu(self):
+        tracks = self._selected_tracks()
+        if not tracks:
+            return
+        menu = self._playlist_target_menu(tracks)
+        menu.exec(self.list_tools.playlist_button.mapToGlobal(self.list_tools.playlist_button.rect().bottomLeft()))
+        menu.deleteLater()
+
+    def _save_tracks_to_playlist(self, playlist_id, tracks):
+        count = self.library.add_tracks_to_playlist(playlist_id, tracks)
+        self._refresh_home()
+        if self.view == "playlist" and self._playlist_id == playlist_id:
+            self._show_playlist(playlist_id, True)
+        self._notice(f"Добавлено в плейлист: {count}")
+
+    def _new_playlist_with_tracks(self, tracks):
+        name, accepted = QInputDialog.getText(self, "Новый плейлист", "Название")
+        if not accepted:
+            return
+        try:
+            key = self.library.create_playlist(name)
+        except ValueError:
+            self._notice("Введи название от 1 до 100 символов.", error=True)
+            return
+        self.library.add_tracks_to_playlist(key, tracks)
+        self._refresh_home()
+        self._show_playlist(key)
+
+    def _remove_selected(self):
+        tracks = self._selected_tracks()
+        if self.view == "playlist" and self._playlist_id is not None:
+            self.library.remove_tracks_from_playlist(self._playlist_id, [track.video_id for track in tracks])
+            self._refresh_home()
+            self._show_playlist(self._playlist_id, True)
+        elif self.view == "likes":
+            for track in tracks:
+                self.library.like(track, False)
+            self._refresh_likes()
+            self._show_tracks(self.library.liked_tracks(), "Мне нравится", "Треки, которые хочется услышать снова", True)
+
+    def _batch_track_menu(self, tracks):
+        menu = QMenu(self)
+        menu.addAction(f"В очередь ({len(tracks)})", lambda: self._enqueue_tracks(tracks))
+        submenu = self._playlist_target_menu(tracks)
+        submenu.setTitle("В плейлист")
+        menu.addMenu(submenu)
+        if self.view in {"playlist", "likes"}:
+            menu.addAction("Убрать выбранные", self._remove_selected)
+        return menu
+
+    def _play_next(self, track):
+        self.playback.play_next(track)
+        self._notice("Следующим: " + track.title)
+
+    def _remove_queue_id(self, video_id):
+        index = next((i for i, track in enumerate(self.playback.queue.tracks) if track.video_id == video_id), None)
+        if index is not None:
+            self.playback.remove(index)
+
+    def _remove_queue_selected(self):
+        ids = [item.data(Qt.ItemDataRole.UserRole).video_id for item in self.queue_list.selectedItems()]
+        self.playback.remove_many(ids)
+
+    def _reorder_queue(self, ids):
+        if set(ids) != {track.video_id for track in self.playback.queue.tracks} or len(ids) != len(self.playback.queue.tracks):
+            return
+        self.playback.reorder_queue(ids)
+
+    def _reorder_playlist(self, ids):
+        query, order = self._local_states.get(self._collection_key(), ("", "custom"))
+        if self.view != "playlist" or query or order != "custom":
+            return
+        self.library.reorder_playlist(self._playlist_id, ids)
+        self._show_playlist(self._playlist_id, True)
+        self._refresh_home()
+
+    def _duplicate_playlist(self, playlist_id):
+        key = self.library.duplicate_playlist(playlist_id)
+        self._refresh_home()
+        self._show_playlist(key)
+
+    def _edit_playlist_description(self, playlist_id):
+        details = self.library.playlist_details(playlist_id)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Описание плейлиста")
+        dialog.resize(420, 240)
+        layout = QVBoxLayout(dialog)
+        editor = QTextEdit()
+        editor.setAcceptRichText(False)
+        editor.setAccessibleName("Описание плейлиста")
+        editor.setPlainText(details["description"])
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                self.library.update_playlist_details(playlist_id, details["name"], editor.toPlainText())
+            except ValueError:
+                self._notice("Описание должно содержать не больше 2000 символов.", True)
+                return
+            if self.view == "playlist" and self._playlist_id == playlist_id:
+                self._show_playlist(playlist_id, True)
+        dialog.deleteLater()
+
+    def _record_route(self, view, playlist_id=None):
+        if self._restoring_route:
+            return
+        route = (view, playlist_id)
+        if self._navigation[self._navigation_index] == route:
+            return
+        self._navigation = self._navigation[:self._navigation_index + 1] + [route]
+        self._navigation = self._navigation[-100:]
+        self._navigation_index = len(self._navigation) - 1
+        self._sync_navigation()
+
+    def _sync_navigation(self):
+        self.back_button.setEnabled(self._navigation_index > 0)
+        self.forward_button.setEnabled(self._navigation_index + 1 < len(self._navigation))
+
+    def _navigate(self, step):
+        index = self._navigation_index + step
+        while 0 <= index < len(self._navigation):
+            view, key = self._navigation[index]
+            if view != "playlist" or any(p["id"] == key for p in self.library.playlists()):
+                break
+            index += step
+        else:
+            return
+        self._navigation_index = index
+        self._restoring_route = True
+        try:
+            if view == "playlist":
+                self._show_playlist(key)
+            else:
+                self.show_view(view)
+        finally:
+            self._restoring_route = False
+            self._sync_navigation()
+
+    def _focus_collection(self):
+        if self.view in {"likes", "history", "playlist"}:
+            self.list_tools.focus_search()
+        else:
+            self._focus_search()
+
+    def _toggle_queue(self):
+        visible = not self.queue_panel.isVisible()
+        self.queue_panel.setVisible(visible)
+        self.queue_toggle.setChecked(visible)
+
+    def _shortcut_focus_changed(self, old, current):
+        editing = isinstance(current, (QLineEdit, QTextEdit, QComboBox))
+        for shortcut in self._transport_shortcuts:
+            shortcut.setEnabled(not editing)
+
+    def _show_shortcuts(self):
+        QMessageBox.information(self, "Горячие клавиши", "Пробел — воспроизведение / пауза\nCtrl+← / → — предыдущий / следующий трек\nCtrl+F — поиск музыки\nCtrl+Shift+F — поиск внутри списка\nCtrl+Q — очередь\nCtrl+Shift+S — перемешивание\nCtrl+Shift+R — режим повтора\nAlt+← / → — назад / вперёд по разделам\nCtrl / Shift + клик — выбор нескольких треков\nCtrl+A — выбрать весь список\nAlt+↑ / ↓ — переставить выбранные треки")
+
     def _notice(self, text: str, error: bool = False):
         self.notice.setText(text)
         self.notice.setProperty("error", error)
@@ -1110,6 +1472,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._shutting_down = True
+        QApplication.instance().focusChanged.disconnect(self._shortcut_focus_changed)
         self._search_token = uuid.uuid4().hex
         self.pool.clear()
         for dialog in list(self._version_dialogs):

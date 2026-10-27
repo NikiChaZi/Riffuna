@@ -112,6 +112,39 @@ class PlayQueue:
         self.tracks.append(track)
         return len(self.tracks) - 1
 
+    def move(self, source: int | str, destination: int) -> bool:
+        """Move an existing entry to a final index while retaining the current ID."""
+        if isinstance(source, str):
+            source = next((i for i, track in enumerate(self.tracks)
+                           if track.video_id == source), -1)
+        if not isinstance(source, int) or not isinstance(destination, int):
+            return False
+        if not (0 <= source < len(self.tracks) and 0 <= destination < len(self.tracks)):
+            return False
+        if source == destination:
+            return False
+        current = self.current
+        track = self.tracks.pop(source)
+        self.tracks.insert(destination, track)
+        if current is not None:
+            self.index = next(i for i, entry in enumerate(self.tracks)
+                              if entry.video_id == current.video_id)
+        return True
+
+    def insert_next(self, track: Track) -> bool:
+        """Insert or move a track after the current entry without duplicating it."""
+        if self.current and self.current.video_id == track.video_id:
+            return False
+        existing = next((i for i, entry in enumerate(self.tracks)
+                         if entry.video_id == track.video_id), None)
+        target = self.index + 1 if self.current is not None else 0
+        if existing is None:
+            self.tracks.insert(target, track)
+            return True
+        if existing < target:
+            target -= 1
+        return self.move(existing, target)
+
     def select(self, track: Track) -> Track:
         self.index = self.add(track)
         return track
@@ -149,6 +182,7 @@ class ShuffleOrder:
         self.rng = rng or random.Random()
         self.ids = []
         self.pending = []
+        self.priority = []
         self.seen = set()
         self.history = []
         self.cursor = -1
@@ -156,6 +190,7 @@ class ShuffleOrder:
     def reset(self, ids, current=None):
         self.ids = list(dict.fromkeys(ids))
         self.pending = self.ids.copy()
+        self.priority = []
         self.rng.shuffle(self.pending)
         self.seen = set()
         self.history = []
@@ -167,13 +202,19 @@ class ShuffleOrder:
         ids = list(dict.fromkeys(ids))
         available = set(ids)
         self.pending = [item for item in self.pending if item in available]
+        self.priority = [item for item in self.priority if item in available]
         self.seen.intersection_update(available)
         for item in ids:
             if item not in self.ids:
                 self.pending.insert(self.rng.randrange(len(self.pending) + 1), item)
         self.ids = ids
 
+    def prioritize(self, item):
+        if item in self.ids:
+            self.priority = [item] + [entry for entry in self.priority if entry != item]
+
     def select(self, item):
+        self.priority = [entry for entry in self.priority if entry != item]
         # Manual selections also become part of the navigation history, while
         # a track outside the queue is never implicitly added to it.
         if self.cursor < 0 or self.history[self.cursor] != item:
@@ -189,6 +230,8 @@ class ShuffleOrder:
                      if self.history[index] in self.ids), None)
 
     def peek(self, repeat=False):
+        if self.priority:
+            return self.priority[0]
         forward = self._forward_index()
         if forward is not None:
             return self.history[forward]
@@ -206,6 +249,9 @@ class ShuffleOrder:
         item = self.peek(repeat)
         if item is None:
             return None
+        if self.priority:
+            self.select(item)
+            return item
         forward = self._forward_index()
         if forward is not None:
             self.cursor = forward

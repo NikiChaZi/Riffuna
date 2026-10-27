@@ -40,7 +40,8 @@ def assert_tile_contents_fit(tile):
         assert child.width() > 0 and child.height() > 0
     cover = tile.findChild(Cover)
     assert not cover.pixmap.isNull(), "The real cached cover should render rather than a placeholder"
-    assert cover.width() == cover.height() == 128
+    assert cover.width() == cover.height() == min(208, tile.width() - 24)
+    assert cover.width() >= 128, "Artwork should fill the responsive card width"
 
 
 @pytest.mark.parametrize("width", [1000, 1280])
@@ -64,7 +65,7 @@ def test_dashboard_cards_fit_with_open_queue(make_window, app, width):
     assert window.home.horizontalScrollBar().maximum() == 0
     for tile in tiles + visible_tiles(window.home, "playlistTile"):
         assert_tile_contents_fit(tile)
-    assert window.home._columns == 3
+    assert window.home._columns == max(1, min(5, (window.home.viewport().width() + 12) // 164))
 
 
 def test_responsive_columns_keep_covers_inside_cards(app):

@@ -9,6 +9,7 @@ import sys
 from PySide6.QtGui import QColor, QFont, QIcon, QPalette
 
 from .branding import APP_NAME
+from . import __version__
 from .style import STYLE
 
 APP_ID = "Riffuna.Desktop"
@@ -54,6 +55,15 @@ def configure_app(app):
 def write_startup_report(app, window, path: Path):
     """Opt-in local UI smoke evidence; never includes library or track data."""
     report = {
+        "version": __version__,
+        "word_lyrics": hasattr(window.expanded_player.lyrics.canvas, "word_progress"),
+        "lyrics_focus": hasattr(window.expanded_player, "focus_button"),
+        "surface_motion": hasattr(window.back_button, "_surface_motion"),
+        "collection_filter": hasattr(window, "list_tools"),
+        "multiple_selection": window.track_list.selectionMode().name == "ExtendedSelection",
+        "queue_actions": all(hasattr(window.playback, method) for method in ("play_next", "add_many", "remove_many", "reorder_queue", "clear_queue")),
+        "navigation_history": hasattr(window, "back_button"),
+        "playlist_schema": window.library.db.execute("PRAGMA user_version").fetchone()[0],
         "frozen": bool(getattr(sys, "frozen", False)), "platform": app.platformName(),
         "audio_backend": getattr(window.playback.player, "backend", "qt"),
         "home_page": type(window.home).__name__,

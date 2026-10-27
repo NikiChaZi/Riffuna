@@ -20,17 +20,21 @@ from .widgets import Cover, ElidedLabel, PointerSlider, icon_button, label
 
 
 EXPANDED_STYLE = """
-QWidget#expandedPlayer { background: #111615; }
-QFrame#lyricsPane { background: #19221D; border: 1px solid #344336; border-radius: 14px; }
-QLabel#npTitle { font-size: 27px; font-weight: 650; }
-QLabel#npArtist { color: #AFBAAF; font-size: 16px; }
+QWidget#expandedPlayer { background: #101214; }
+QFrame#lyricsPane { background: #15181B; border: 1px solid #282D31; border-radius: 20px; }
+QLabel#npTitle { font-size: 31px; font-weight: 700; letter-spacing: -1px; }
+QLabel#npArtist { color: #A7ACB0; font-size: 17px; }
 QStackedWidget#lyricsStack { background: transparent; }
-QLabel#lyricsMessage { font-size: 23px; font-weight: 600; }
+QLabel#lyricsMessage { font-size: 26px; font-weight: 650; }
 QPushButton#npPlay { background: #FF875F; color: #151A19; border: none; border-radius: 26px; padding: 0; }
 QPushButton#npPlay:hover { background: #FFA080; }
 QPushButton#npPlay:disabled { background: #70503F; }
-QPushButton#motionToggle { background: transparent; color: #AFBAAF; font-size: 12px; padding: 7px 10px; }
-QPushButton#motionToggle:checked { background: #354235; color: #F4F1E8; }
+QPushButton#motionToggle { background: transparent; color: #A0A7AC; border-color: transparent; font-size: 12px; padding: 7px 10px; }
+QPushButton#motionToggle:hover { color: #F4F1E8; background: #20252A; }
+QPushButton#motionToggle:checked { background: #2D3237; color: #F4F1E8; }
+QFrame#focusTransport { background: #1B1F23; border: 1px solid #30363B; border-radius: 14px; }
+QPushButton#lyricFocus { background: transparent; color: #BEC3C6; border-color: #343A40; font-size: 12px; padding: 7px 12px; }
+QPushButton#lyricFocus:checked { color: #FFAD8E; background: #392B25; border-color: #704B3B; }
 """
 
 
@@ -160,6 +164,7 @@ class ExpandedPlayer(QWidget):
         self.duration = 0
         self.seekable = False
         self._desired_open = False
+        self._lyrics_focus = False
         self._source_ref = None
         self._opened_notified = False
         self._build()
@@ -172,18 +177,30 @@ class ExpandedPlayer(QWidget):
         self._escape = QShortcut(QKeySequence("Escape"), self)
         self._escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._escape.activated.connect(self.collapse)
+        self._focus_shortcut = QShortcut(QKeySequence("F2"), self)
+        self._focus_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._focus_shortcut.activated.connect(lambda: self.focus_button.toggle())
+        from .surface_motion import install_surface_motion
+        install_surface_motion(self, self.policy)
         self.set_track(None)
         self.hide()
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 24)
+        root.setContentsMargins(32, 24, 32, 24)
         root.setSpacing(20)
         header = QHBoxLayout()
         self.collapse_button = icon_button("chevron_down", "Свернуть плеер · Esc", 40)
         self.collapse_button.clicked.connect(self.collapse)
         header.addWidget(self.collapse_button)
-        header.addWidget(label("В ПЛЕЕРЕ", "eyebrow"), 1)
+        header.addWidget(label("СЕЙЧАС ИГРАЕТ", "eyebrow"), 1)
+        self.focus_button = QPushButton("Фокус на тексте")
+        self.focus_button.setObjectName("lyricFocus")
+        self.focus_button.setCheckable(True)
+        self.focus_button.setAccessibleName("Фокус на тексте песни")
+        self.focus_button.setToolTip("Крупный текст и компактное управление · F2")
+        self.focus_button.toggled.connect(self._set_lyrics_focus)
+        header.addWidget(self.focus_button)
         self.motion_button = QPushButton("Меньше движения")
         self.motion_button.setObjectName("motionToggle")
         self.motion_button.setCheckable(True)
@@ -220,7 +237,8 @@ class ExpandedPlayer(QWidget):
         left.addLayout(title_row)
         self.artist = ElidedLabel("", "npArtist")
         left.addWidget(self.artist)
-        self.version_button = QPushButton("Версия записи")
+        self.version_button = QPushButton("Другие записи")
+        self.version_button.setToolTip("Выбрать другую загрузку этой песни")
         self.version_button.clicked.connect(lambda: self.version_requested.emit(self.track.video_id) if self.track else None)
         self.version_button.hide()
         left.addWidget(self.version_button, 0, Qt.AlignmentFlag.AlignLeft)
@@ -283,6 +301,33 @@ class ExpandedPlayer(QWidget):
         self.lyrics.seek_requested.connect(self.seek_requested)
         body.addWidget(self.lyrics, 6)
         root.addWidget(self.content, 1)
+        self.focus_transport = QFrame()
+        self.focus_transport.setObjectName("focusTransport")
+        transport = QHBoxLayout(self.focus_transport)
+        transport.setContentsMargins(16,10,16,10)
+        transport.setSpacing(12)
+        self.focus_title = ElidedLabel("", "trackTitle")
+        self.focus_title.setMaximumWidth(240)
+        transport.addWidget(self.focus_title,1)
+        self.focus_previous = icon_button("previous", "Предыдущая запись", 36)
+        self.focus_previous.clicked.connect(self.previous_requested)
+        transport.addWidget(self.focus_previous)
+        self.focus_play = icon_button("play", "Воспроизвести", 40)
+        self.focus_play.clicked.connect(self.toggle_requested)
+        transport.addWidget(self.focus_play)
+        self.focus_next = icon_button("next", "Следующая запись",36)
+        self.focus_next.clicked.connect(self.next_requested)
+        transport.addWidget(self.focus_next)
+        self.focus_elapsed = label("0:00","tiny")
+        transport.addWidget(self.focus_elapsed)
+        self.focus_seek = PointerSlider(formatter=lambda value: time_label(value//1000))
+        self.focus_seek.setAccessibleName("Позиция воспроизведения в режиме текста")
+        self.focus_seek.committed.connect(self.seek_requested)
+        transport.addWidget(self.focus_seek,2)
+        self.focus_total = label("—","tiny")
+        transport.addWidget(self.focus_total)
+        self.focus_transport.hide()
+        root.addWidget(self.focus_transport)
         self.flight = _CoverFlight(self)
         self.setTabOrder(self.collapse_button, self.motion_button)
         self.setTabOrder(self.motion_button, self.play_button)
@@ -292,6 +337,9 @@ class ExpandedPlayer(QWidget):
     def set_track(self, track: Track | None):
         previous_id = self.track.video_id if self.track else None
         self.track = track
+        self.focus_title.set_full_text(track.title if track else "Выбери запись")
+        self.focus_play.setEnabled(track is not None)
+        self.focus_button.setEnabled(track is not None)
         self.title.set_full_text(track.title if track else "Выбери запись")
         self.artist.set_full_text(track.artist if track else "Музыка начинается с выбора")
         for control in (self.play_button, self.previous_button, self.next_button, self.like_button,
@@ -340,8 +388,8 @@ class ExpandedPlayer(QWidget):
             document = LyricsDocument(LyricsState.ERROR, text="Получены некорректные данные текста. Попробуй ещё раз.")
         accepted = self.set_lyrics(recording_id, self.request_token, document)
         if accepted and document.state == LyricsState.SYNCED and document.timing_confirmed:
-            self.lyrics.footer.setText("Совпадение по метаданным и длительности" if payload.get("match_quality") == "metadata_duration"
-                                       else "Таймкоды из выбранного LRC")
+            self.lyrics.footer.setText("Нажми на строку, чтобы перейти к ней" if any(cue.words for cue in document.cues)
+                                       else "Подсветка слов по строкам · приблизительно")
         if accepted and payload.get("cache_stale"):
             self.lyrics.footer.setText("Сохранённый текст · сервис временно недоступен")
         return accepted
@@ -355,6 +403,9 @@ class ExpandedPlayer(QWidget):
     @Slot("qlonglong")
     def set_position(self, milliseconds: int):
         self.position = max(0, int(milliseconds))
+        if not self.focus_seek.isSliderDown():
+            self.focus_seek.setValue(min(self.position,self.focus_seek.maximum()))
+            self.focus_elapsed.setText(time_label(self.position//1000))
         if not self.seek.isSliderDown():
             self.seek.setValue(min(self.position, self.seek.maximum()))
             self.elapsed.setText(time_label(self.position // 1000))
@@ -364,10 +415,14 @@ class ExpandedPlayer(QWidget):
         self.duration = max(0, int(milliseconds))
         self.seek.setRange(0, min(self.duration, 2147483647))
         self.total.setText(time_label(self.duration // 1000) if self.duration else "—")
+        self.focus_seek.setRange(0,min(self.duration,2147483647))
+        self.focus_total.setText(self.total.text())
+        self.focus_seek.setEnabled(self.seekable and self.duration>0)
         self.seek.setEnabled(self.seekable and self.duration > 0)
 
     def set_seekable(self, seekable: bool):
         self.seekable = bool(seekable)
+        self.focus_seek.setEnabled(self.seekable and self.duration>0)
         self.seek.setEnabled(self.seekable and self.duration > 0)
         self.lyrics.canvas.seek_enabled = self.seekable
 
@@ -375,6 +430,8 @@ class ExpandedPlayer(QWidget):
         playing = state == "playing" or (state == "loading" and wants_play is True)
         self.play_button.setIcon(icon("pause" if playing else "play", "#151A19", 28))
         self.play_button.setAccessibleName("Приостановить" if playing else "Воспроизвести")
+        self.focus_play.setIcon(icon("pause" if playing else "play", "#FFAE8C", 24))
+        self.focus_play.setAccessibleName("Приостановить" if playing else "Воспроизвести")
         self.status.setText({"playing": "Сейчас играет", "paused": "На паузе", "loading": "Подключаем запись…",
                              "error": "Запись недоступна", "stopped": "Готово к музыке"}.get(state, ""))
         self.lyrics.canvas.set_playing(state == "playing")
@@ -404,9 +461,20 @@ class ExpandedPlayer(QWidget):
     def set_navigation(self, previous: bool, next_: bool):
         self.previous_button.setEnabled(previous)
         self.next_button.setEnabled(next_)
+        self.focus_previous.setEnabled(previous)
+        self.focus_next.setEnabled(next_)
 
     def set_version_selection_available(self, available: bool):
         self.version_button.setVisible(bool(available))
+
+    def _set_lyrics_focus(self, enabled):
+        self._lyrics_focus = bool(enabled)
+        if hasattr(self,"left"):
+            self.left.setVisible(not enabled)
+            self.focus_transport.setVisible(enabled)
+            self.content.layout().activate()
+            self._adapt_cover()
+            self.lyrics.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _cover_rect(self):
         return QRectF(self.cover.mapTo(self, QPoint(0, 0)), self.cover.size())
@@ -447,6 +515,8 @@ class ExpandedPlayer(QWidget):
     def collapse(self):
         if not self.isVisible():
             return
+        if self.focus_button.isChecked():
+            self.focus_button.setChecked(False)
         self._desired_open = False
         self.cover.suppress_paint = True
         if not self._travel.running:

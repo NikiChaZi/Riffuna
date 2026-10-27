@@ -5,6 +5,15 @@ from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 PATHS = {
+    "arrow_up_right": '<path d="M6 18 18 6M6 6h12v12"/>',
+    "arrow_right": '<path d="M4 12h16m-6-6 6 6-6 6"/>',
+    "collection": '<rect x="4" y="7" width="16" height="14" rx="2"/><path d="M7 3h10m-6 9 5 3-5 3Z"/>',
+    "filter": '<path d="M4 6h16M7 12h10m-7 6h4"/>',
+    "check": '<path d="m5 12 4 4L19 6"/>',
+    "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',
+
+    "back": '<path d="m15 5-7 7 7 7"/>',
+    "forward": '<path d="m9 5 7 7-7 7"/>',
     "shuffle": '<path d="M3 6h3l12 12h3M17 14l4 4-4 4M3 18h3l4-4m4-4 4-4h3m-4-4 4 4-4 4"/>',
     "playlist": '<path d="M4 5h16M4 10h16M4 15h8m5-1v7m-3-3h6"/>',
     "more": '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',

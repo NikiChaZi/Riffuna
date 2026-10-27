@@ -34,6 +34,9 @@ attribution and per-file licensing.
 Riffuna's PolyForm Noncommercial restrictions do not apply to libmpv, FFmpeg or
 other third-party components. Users retain their licenses' rights to modify and
 replace those libraries and to reverse-engineer the combined application for
-debugging such modifications. For the one-file application, set the RIFFUNA_LIBMPV environment variable
-to an absolute path to an ABI-compatible replacement DLL before launching.
+debugging such modifications. In the Kotlin Windows package, close Riffuna and replace
+`Riffuna.runtime/app/resources/vendor/libmpv/libmpv-2.dll` with an ABI-compatible
+replacement DLL. Keep a backup of the original binary. The source uses JNA to load
+this file dynamically. The legacy Python one-file application also supported the
+RIFFUNA_LIBMPV environment variable.
 No signature or hash check prevents the application from loading a replacement.

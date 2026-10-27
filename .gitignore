@@ -22,3 +22,20 @@ dist-next/
 vendor/libmpv/
 
 /Riffuna.exe
+
+.tools/
+.gradle/
+**/build/
+local.properties
+
+/vendor/source/
+/vendor/source-build/
+
+.kotlin/
+
+source-runtime/node_modules/
+source-runtime/probe.mjs
+
+/Riffuna.runtime/
+/Riffuna.runtime.next/
+/Riffuna.exe.next

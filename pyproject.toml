@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "riffuna"
-version = "0.2.0.dev3"
+version = "0.2.0.dev5"
 description = "Personal Windows music player"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE", "LICENSING.md", "LICENSES/*"]

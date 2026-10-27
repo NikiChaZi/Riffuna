@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 from musicdesk.appearance import configure_app
 from musicdesk.expanded_player import ExpandedPlayer, ExpandableCover
 from musicdesk.lyrics_view import LyricCue, LyricsDocument, LyricsState
+from musicdesk.lyric_timing import WordCue
 from musicdesk.models import Track
 from musicdesk.motion import MotionPolicy
 from musicdesk.widgets import Artwork, label
@@ -80,7 +81,14 @@ def main():
 
     def capture(name):
         app.processEvents()
-        if not host.grab().save(str(args.output / (name + ".png"))):
+        shot=host.grab().toImage()
+        from PySide6.QtGui import QImage
+        image=QImage(shot.width(),shot.height()+26,QImage.Format.Format_ARGB32)
+        image.fill(QColor("#101214"))
+        painter=QPainter(image);painter.drawImage(0,0,shot)
+        painter.setPen(QColor("#A3A8AD"));painter.drawText(12,shot.height()+18,"OFFLINE UI FIXTURE — вымышленные строки и обложка")
+        painter.end()
+        if not image.save(str(args.output / (name + ".png"))):
             raise RuntimeError("Could not render " + name)
 
     for state in LyricsState:
@@ -102,6 +110,22 @@ def main():
     host.resize(1280, 800)
     panel.resize(host.size())
     panel.policy.set_reduced(True)
+    host.resize(1280,800)
+    panel.resize(host.size())
+    word_cues=[]
+    for cue in CUES:
+        chunks=cue.text.split()
+        words=tuple(WordCue(cue.at_ms+i*500,cue.at_ms+(i+1)*500,word+(" " if i+1<len(chunks) else "")) for i,word in enumerate(chunks))
+        word_cues.append(LyricCue(cue.at_ms,cue.text,words,words[-1].end_ms))
+    panel.set_lyrics(track.video_id,panel.request_token,LyricsDocument(LyricsState.SYNCED,tuple(word_cues),source="Синтетические тайминги",timing_confirmed=True,word_timing="provided"))
+    for position in (8200,8700,9200,9700):
+        panel.set_position(position)
+        capture(f"04-word-fill-{position}ms")
+    panel.focus_button.setChecked(True)
+    capture("05-word-focus")
+    host.resize(1000,650);panel.resize(host.size())
+    capture("06-word-focus-minimum")
+    panel.focus_button.setChecked(False)
     panel.collapse()
     panel.policy.set_reduced(False)
     panel.open_from(source)
