@@ -20,15 +20,18 @@ def metric(order,truth,k=20):
 def export_tower(tower):
     return {k:v.detach().cpu().numpy() for k,v in tower.state_dict().items()}
 
-def train(root,epochs=5):
-    start=time.monotonic();prepared=prepare(root);artifact=root/"model";artifact.mkdir(exist_ok=True)
+def train(root,epochs=5,*,seed=42,output=None):
+    if epochs < 1 or seed < 0: raise ValueError("epochs must be positive and seed nonnegative")
+    start=time.monotonic();prepared=prepare(root);artifact=Path(output) if output is not None else root/"model"
+    if output is not None and artifact.exists() and any(artifact.iterdir()): raise ValueError("Refusing to overwrite an existing evaluation model")
+    artifact.mkdir(parents=True,exist_ok=True)
     data=np.load(prepared/"data.npz");x=data["features"];gd=int(data["genre_dim"])
     histories=rows(data,"train");rank_targets=rows(data,"rank");tests=rows(data,"test")
     device="cuda" if torch.cuda.is_available() else "cpu"
-    np.random.seed(42);random.seed(42);torch.manual_seed(42);torch.set_num_threads(8)
+    np.random.seed(seed);random.seed(seed);torch.manual_seed(seed);torch.set_num_threads(8)
     model=MusicTwoTower(x.shape[1]).to(device);features=torch.tensor(x,device=device)
     optim=torch.optim.AdamW(model.parameters(),lr=.001,weight_decay=.0001)
-    rng=np.random.default_rng(42);pairs=[]
+    rng=np.random.default_rng(seed);pairs=[]
     for u,h in enumerate(histories):
         pairs.extend((u,int(t)) for t in rng.choice(h,min(40,len(h)),replace=False))
     pairs=np.asarray(pairs);print("training",device,"pairs per epoch",len(pairs),"features",x.shape,flush=True)
@@ -72,7 +75,7 @@ def train(root,epochs=5):
         pool=pools[int(u in valid_users)];pool[0].append(xx);pool[1].extend(np.isin(idx,rank_targets[u]).astype(int));pool[2].extend([u]*len(idx))
         if u%1000==0:print("ranker pools",u,"/",len(histories),flush=True)
     def to_pool(p):return Pool(np.concatenate(p[0]),np.array(p[1]),group_id=np.array(p[2]))
-    ranker=CatBoostRanker(iterations=350,depth=6,learning_rate=.06,loss_function="YetiRank",eval_metric="NDCG:top=20",random_seed=42,thread_count=8,verbose=100,allow_writing_files=False)
+    ranker=CatBoostRanker(iterations=350,depth=6,learning_rate=.06,loss_function="YetiRank",eval_metric="NDCG:top=20",random_seed=seed,thread_count=8,verbose=100,allow_writing_files=False)
     ranker.fit(to_pool(pools[0]),eval_set=to_pool(pools[1]),early_stopping_rounds=60)
     totals={k:[] for k in ("popularity","genre_similarity","two_tower","two_stage")};recall100=[]
     eval_users=rng.choice(len(histories),min(1000,len(histories)),replace=False)
@@ -90,7 +93,7 @@ def train(root,epochs=5):
     metrics={name:dict(recall_at_20=float(np.mean(values,axis=0)[0]),ndcg_at_20=float(np.mean(values,axis=0)[1])) for name,values in totals.items()}
     manifest=json.loads((prepared/"manifest.json").read_text(encoding="utf-8"))
     manifest.update(schema=1,domain="music",model="history-content-two-tower+CatBoostRanker",epochs=epochs,losses=losses,
-       device=device,dimensions=64,metrics=metrics,retrieval_recall_at_100=float(np.mean(recall100)),evaluation_users=len(eval_users),
+       device=device,dimensions=64,training_seed=seed,metrics=metrics,retrieval_recall_at_100=float(np.mean(recall100)),evaluation_users=len(eval_users),
        ranker_pool_protocol="Ranker training injects held-out positives; test uses actual top-200 retrieval without injection.",
        seconds=round(time.monotonic()-start,1),limitations=["Aggregate counts split randomly, not chronologically","Missing modern artists require catalog enrichment; offline metrics are not a guarantee of personal taste"])
     (artifact/"genre_names.json").write_text((prepared/"genre_names.json").read_text(encoding="utf-8"),encoding="utf-8")
@@ -104,4 +107,5 @@ def train(root,epochs=5):
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser();parser.add_argument("--root",type=Path,default=Path(".test-data/music-training"));parser.add_argument("--epochs",type=int,default=5)
-    args=parser.parse_args();train(args.root,args.epochs)
+    parser.add_argument("--seed",type=int,default=42);parser.add_argument("--output",type=Path)
+    args=parser.parse_args();train(args.root,args.epochs,seed=args.seed,output=args.output)

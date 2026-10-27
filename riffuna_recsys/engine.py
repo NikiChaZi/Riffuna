@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from collections import defaultdict
 import numpy as np
 from .portable_ranker import PortableRanker
+from .portable_tower import query as portable_query
 from .features import normalize,rank_features,content_features
 from .metadata import ArtistTags
 from concurrent.futures import ThreadPoolExecutor
@@ -39,12 +40,7 @@ class MusicEngine:
                 for start in range(0,len(self.vectors),512):
                     self.qdrant.upsert(name,points=[models.PointStruct(id=i,vector=self.vectors[i].tolist(),payload={"domain":"music","track_id":self.catalog[i]["id"]}) for i in range(start,min(start+512,len(self.vectors)))])
     def _query(self,profile):
-        w=self.tower
-        value=profile@w["layers.0.weight"].T+w["layers.0.bias"]
-        value=(value-value.mean())/np.sqrt(value.var()+1e-5)
-        value=value*w["layers.1.weight"]+w["layers.1.bias"]
-        value=np.maximum(value,0)@w["layers.3.weight"].T+w["layers.3.bias"]
-        return value/max(float(np.linalg.norm(value)),1e-8)
+        return portable_query(profile, self.tower)
     def match(self,seed):
         artist=normalize(seed.get("artist",""));title=normalize(seed.get("title",""))
         # yt-dlp titles often include an exact artist prefix; strip only that prefix.

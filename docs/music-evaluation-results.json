@@ -1,0 +1,138 @@
+{
+  "protocol": "Fixed random split and fixed user cohort. Train histories only for ALS/input/exclusion; CatBoost uses the disjoint ranker partition. Test targets are never injected into retrieval. No temporal or online claim.",
+  "training_seeds": [
+    42,
+    43,
+    44
+  ],
+  "cohort_seed": 2026,
+  "evaluation_users": 1000,
+  "catalog_tracks": 49668,
+  "als": {
+    "factors": 64,
+    "regularization": 0.1,
+    "alpha": 20,
+    "iterations": 15
+  },
+  "retrieval_candidates": 200,
+  "postprocessing": "Before artist caps and YouTube resolution",
+  "data_sha256": "84fe949aa038be28812132610e3a2c198842be2740deab2ed5c4df916f6be58e",
+  "metrics": {
+    "popularity": {
+      "recall_at_20": {
+        "mean": 0.016216666666666706,
+        "ci95": [
+          0.01183333333333333,
+          0.02075083333333341
+        ]
+      },
+      "ndcg_at_20": {
+        "mean": 0.01037922835585682,
+        "ci95": [
+          0.007700778475979276,
+          0.013032314407637757
+        ]
+      }
+    },
+    "genre_similarity": {
+      "recall_at_20": {
+        "mean": 0.009033333333333322,
+        "ci95": [
+          0.0055833333333333325,
+          0.013133333333333334
+        ]
+      },
+      "ndcg_at_20": {
+        "mean": 0.005061852481079221,
+        "ci95": [
+          0.003044024195906498,
+          0.0074224464483054215
+        ]
+      }
+    },
+    "als": {
+      "recall_at_20": {
+        "mean": 0.09039999999999915,
+        "ci95": [
+          0.08048180555555484,
+          0.1003729166666659
+        ]
+      },
+      "ndcg_at_20": {
+        "mean": 0.06360521663077597,
+        "ci95": [
+          0.055706107562118,
+          0.07152183053293765
+        ]
+      }
+    },
+    "two_tower": {
+      "recall_at_20": {
+        "mean": 0.03596111111111126,
+        "ci95": [
+          0.02929958333333346,
+          0.04295250000000013
+        ]
+      },
+      "ndcg_at_20": {
+        "mean": 0.021793406125562072,
+        "ci95": [
+          0.017535215808394983,
+          0.026481483575682908
+        ]
+      }
+    },
+    "two_stage": {
+      "recall_at_20": {
+        "mean": 0.04542222222222243,
+        "ci95": [
+          0.03933333333333358,
+          0.05186680555555561
+        ]
+      },
+      "ndcg_at_20": {
+        "mean": 0.0324473707811599,
+        "ci95": [
+          0.027937110730331366,
+          0.03738546201119235
+        ]
+      }
+    }
+  },
+  "paired_two_stage_minus_als": {
+    "recall_at_20": {
+      "mean": -0.04497777777777794,
+      "ci95": [
+        -0.054811666666666724,
+        -0.0349708333333335
+      ]
+    },
+    "ndcg_at_20": {
+      "mean": -0.03115784584961593,
+      "ci95": [
+        -0.039132554937888225,
+        -0.023292010157239907
+      ]
+    }
+  },
+  "runs": [
+    {
+      "training_seed": 42,
+      "als_seconds": 7.0
+    },
+    {
+      "training_seed": 43,
+      "als_seconds": 7.02
+    },
+    {
+      "training_seed": 44,
+      "als_seconds": 7.19
+    }
+  ],
+  "limitations": [
+    "One fixed random split, not a temporal evaluation",
+    "Three training seeds give limited evidence about between-run variation",
+    "Offline ranking does not measure personal listening satisfaction",
+    "Users have training histories; cold-user evaluation is not included"
+  ]
+}
