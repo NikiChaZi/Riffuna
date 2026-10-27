@@ -28,7 +28,7 @@ for(const entry of fs.readdirSync(path.join(bgRoot,'dist'),{recursive:true,withF
  }
 }
 outputs['BGUTILS-LICENSE.txt']=fs.readFileSync(path.join(bgRoot,'LICENSE'));
-const manifest={youtubejs_version:'18.3.0',upstream:'https://github.com/LuanRT/YouTube.js',desktop_reference:'source-runtime/index.mjs',desktop_sha256:sha(source),template_sha256:sha(template),files:Object.fromEntries(Object.entries(outputs).map(([name,data])=>[name,sha(data)]))};
+const manifest={youtubejs_version:'18.3.0',upstream:'https://github.com/LuanRT/YouTube.js',desktop_reference:'source-runtime/index.mjs',desktop_sha256:sha(source),template_sha256:sha(template),files:Object.fromEntries(Object.entries(outputs).sort(([a],[b])=>(a>b)-(a<b)).map(([name,data])=>[name,sha(data)]))};
 outputs['BUILD-MANIFEST.json']=Buffer.from(JSON.stringify(manifest,null,2)+'\n');
 const directory=path.join(root,'android/app/src/main/assets/source');
 for(const [name,data] of Object.entries(outputs)){

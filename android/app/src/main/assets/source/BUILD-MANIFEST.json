@@ -5,10 +5,9 @@
   "desktop_sha256": "8312fb7a487ebd44fe81f6aa724e7d3e981e62d8fcf85f7958f79013f63f6c59",
   "template_sha256": "1e5c88aff8b20d3b5ae22f5536d54eb5fc3c76e9714ada458c75bef3c81b43b2",
   "files": {
-    "android.mjs": "92043b78d98fc1fc55311fd8d2522c03b9c8e6de77fd03a494ff9aa2833c5d61",
-    "youtubei.js": "343518935745d56c7ee4082d6e59c568f6a19a5e78c0e3386a38892260d37d38",
+    "BGUTILS-LICENSE.txt": "69bb14fee2d102583d6cccdf1e0e2ced4d2bbfd3c42b172e0a9f4e32a9c48c88",
     "YOUTUBEJS-LICENSE.txt": "bf82e28381c6256138322a79da2082db5ddb040b4b7009b520f08a419d722c69",
-    "index.html": "1fc3f894f3696b76d52b4f774301527c975d947a690e6dd3b1f7d0124e739c71",
+    "android.mjs": "92043b78d98fc1fc55311fd8d2522c03b9c8e6de77fd03a494ff9aa2833c5d61",
     "attestation-core.mjs": "db45c3c1372987563e16e458220ff7555d03428ccf92fdd1c304c3bdc1685b02",
     "bgutils/core/BotGuardClient.js": "0d0b4b2453d40cacfc431c75c8c05fb6fe9f96a6b30bafdd389b7089d4675f9a",
     "bgutils/core/ChallengeFetcher.js": "a83b67567bb624f584a1f65492a6443eacd947f317e407d2c77a423480f7011e",
@@ -17,10 +16,11 @@
     "bgutils/exports/types.js": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2",
     "bgutils/exports/utils.js": "a2f7d1cc0d49aa290102e87e12eae2ee8b760121a12b57687b34581710031b53",
     "bgutils/exports/webpo.js": "91714fbe56ecfc454f9db784a4cbadf56d45d6daf7fb3f291c9f98ad6cf7542e",
-    "bgutils/utils/constants.js": "9da6c808c288d569c86a26a8cd23f8acc74c3db0218cc5ec9aa84bba320ebd2f",
     "bgutils/utils/EventEmitterLike.js": "da63127ec4ecd770a1359e5acfdc31f1bc9bcafd5e44483d0a8eae1310698b7b",
+    "bgutils/utils/constants.js": "9da6c808c288d569c86a26a8cd23f8acc74c3db0218cc5ec9aa84bba320ebd2f",
     "bgutils/utils/helpers.js": "afb157463b50450146c608efb73162f4d8a7d2a792370013a965f93ae2a28ba8",
     "bgutils/utils/types.js": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2",
-    "BGUTILS-LICENSE.txt": "69bb14fee2d102583d6cccdf1e0e2ced4d2bbfd3c42b172e0a9f4e32a9c48c88"
+    "index.html": "1fc3f894f3696b76d52b4f774301527c975d947a690e6dd3b1f7d0124e739c71",
+    "youtubei.js": "343518935745d56c7ee4082d6e59c568f6a19a5e78c0e3386a38892260d37d38"
   }
 }
