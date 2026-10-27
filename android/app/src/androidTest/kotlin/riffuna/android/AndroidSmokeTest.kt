@@ -287,6 +287,74 @@ class AndroidSmokeTest {
     }
 
     @Test
+    fun foregroundDeviceTracksStartAndSeek(): Unit = runBlocking {
+        Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("liveNetwork") == "true")
+        val name = "device-${UUID.randomUUID()}.sqlite3"
+        val app = context.applicationContext as RiffunaApplication
+        lateinit var graph: AppGraph
+        instrumentation.runOnMainSync {
+            graph = AppGraph(context, name, "test-device-${UUID.randomUUID()}")
+            app.testGraph = graph
+            graph.controller.setVolume(0f)
+        }
+        val activity =
+            instrumentation.startActivitySync(
+                android.content
+                    .Intent(context, MainActivity::class.java)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        try {
+            for ((index, query) in
+                listOf("Дора Верю", "Rules of Nature", "Lady Gaga Just Dance").withIndex()) {
+                val track = graph.source.search(query, 1).first()
+                instrumentation.runOnMainSync { graph.controller.play(track) }
+                withTimeout(120000) {
+                    while (
+                        !graph.controller.state.value.playing ||
+                            graph.controller.state.value.positionMs < 750
+                    ) {
+                        graph.controller.state.value.playbackError?.let { error(it) }
+                        delay(100)
+                    }
+                }
+                val target = (graph.controller.state.value.durationMs * 0.7).toLong()
+                instrumentation.runOnMainSync {
+                    graph.controller.pausePlayback()
+                    graph.controller.seek(target)
+                }
+                withTimeout(20000) {
+                    while (
+                        kotlin.math.abs(graph.controller.state.value.positionMs - target) > 1000
+                    ) delay(100)
+                }
+                assertFalse(graph.controller.state.value.playing)
+                instrumentation.runOnMainSync { graph.controller.resumePlayback() }
+                withTimeout(20000) {
+                    while (
+                        !graph.controller.state.value.playing ||
+                            graph.controller.state.value.positionMs < target + 500
+                    ) {
+                        graph.controller.state.value.playbackError?.let { error(it) }
+                        delay(100)
+                    }
+                }
+                android.util.Log.i("RiffunaTest", "DEVICE_TRACK_OK index=$index")
+            }
+        } finally {
+            instrumentation.runOnMainSync {
+                activity.finish()
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+            instrumentation.waitForIdleSync()
+            instrumentation.runOnMainSync {
+                graph.controller.close()
+                app.testGraph = null
+            }
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
     fun severalTracksStartPauseSeekAndResume(): Unit = runBlocking {
         Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("liveNetwork") == "true")
         val name = "multi-${UUID.randomUUID()}.sqlite3"

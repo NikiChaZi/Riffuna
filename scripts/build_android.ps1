@@ -1,4 +1,4 @@
-param([switch]$DebugBuild, [switch]$LiveTest, [string]$DeviceSerial = '')
+param([switch]$DebugBuild, [switch]$LiveTest, [string]$DeviceSerial = '', [string]$TestFilter = '')
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $taskRoot
@@ -52,7 +52,8 @@ try {
         & $taskAdb @taskDevice install --no-streaming -r $taskTestApk
         if ($LASTEXITCODE -ne 0) { throw 'Test APK installation failed.' }
         $taskTestPackage = if ($DebugBuild) { 'app.riffuna.player.debug.test' } else { 'app.riffuna.player.test' }
-        $taskTestOutput = & $taskAdb @taskDevice shell am instrument -w -e liveNetwork true ($taskTestPackage + '/androidx.test.runner.AndroidJUnitRunner')
+        $taskTestFilter = if ($TestFilter) { @('-e', 'class', $TestFilter) } else { @() }
+        $taskTestOutput = & $taskAdb @taskDevice shell am instrument -w -e liveNetwork true @taskTestFilter ($taskTestPackage + '/androidx.test.runner.AndroidJUnitRunner')
         $taskTestOutput | Write-Output
         if ($LASTEXITCODE -ne 0 -or ($taskTestOutput -join "`n") -notmatch 'OK \(\d+ tests?\)' -or ($taskTestOutput -join "`n") -match 'FAILURES!!!|INSTRUMENTATION_FAILED') { throw 'Android device tests failed.' }
     }
