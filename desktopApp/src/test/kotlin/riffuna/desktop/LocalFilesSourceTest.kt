@@ -29,7 +29,7 @@ class LocalFilesSourceTest {
             val track = reopened.localTracks().single()
             assertTrue(track.isLocalFile)
             assertEquals(track, reopened.search("artist song", 40).single())
-            assertEquals(audio.toUri().toString(), reopened.resolve(track).uri)
+            assertEquals(audio.toRealPath().toUri().toString(), reopened.resolve(track).uri)
             assertContentEquals(byteArrayOf(1, 2, 3), Files.readAllBytes(audio))
             Files.delete(audio)
             assertFailsWith<IllegalStateException> { reopened.resolve(track) }
@@ -63,7 +63,7 @@ class LocalFilesSourceTest {
                 }
             val combined = DeviceMusicSource(remote, local)
             val track = combined.localTracks().single()
-            assertEquals(file.toUri().toString(), combined.resolve(track).uri)
+            assertEquals(file.toRealPath().toUri().toString(), combined.resolve(track).uri)
             combined.prefetch(track)
             combined.invalidate(track)
             assertEquals(0, calls)
