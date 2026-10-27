@@ -39,19 +39,34 @@ class LocalController(
     private val mutable =
         MutableStateFlow(
             AppState(
-                likes = initialLikes,
-                history = initialHistory,
-                playbackReference = initialReference,
-                queue = queue.tracks,
-                queueIndex = queue.index,
-                current = initialCurrent,
-                durationMs = initialCurrent?.duration?.times(1000L) ?: 0,
-                playlists = library.playlists(),
-                volume =
-                    (library.setting("volume", "0.65").toFloatOrNull() ?: .65f).coerceIn(0f, 1f),
-                repeatMode = RepeatMode.fromKey(library.setting("repeat_mode", "off")),
-                reducedMotion = library.setting("reduced_motion", "off") == "on",
-                shuffle = library.setting("shuffle", "off") == "on",
+                libraryState =
+                    LibraryUiState(
+                        likes = initialLikes,
+                        history = initialHistory,
+                        playlists = library.playlists(),
+                    ),
+                playback =
+                    PlaybackUiState(
+                        playbackReference = initialReference,
+                        current = initialCurrent,
+                        durationMs = initialCurrent?.duration?.times(1000L) ?: 0,
+                        volume =
+                            (library.setting("volume", "0.65").toFloatOrNull() ?: .65f).coerceIn(
+                                0f,
+                                1f,
+                            ),
+                    ),
+                queueState =
+                    QueueUiState(
+                        queue = queue.tracks,
+                        queueIndex = queue.index,
+                        repeatMode = RepeatMode.fromKey(library.setting("repeat_mode", "off")),
+                        shuffle = library.setting("shuffle", "off") == "on",
+                    ),
+                navigationState =
+                    NavigationUiState(
+                        reducedMotion = library.setting("reduced_motion", "off") == "on"
+                    ),
             )
         )
     override val state: StateFlow<AppState> = mutable
@@ -108,7 +123,9 @@ class LocalController(
                 devices.any { it.id == key }
             } ?: "auto"
         if (devices.isNotEmpty()) runCatching { audio.selectDevice(selected) }
-        mutable.update { it.copy(audioDevices = devices, audioDevice = selected) }
+        mutable.update {
+            it.copy(playback = it.playback.copy(audioDevices = devices, audioDevice = selected))
+        }
         val priorityIds =
             runCatching {
                     Json.parseToJsonElement(library.setting("queue_next_ids", "[]")).jsonArray.map {
@@ -134,13 +151,16 @@ class LocalController(
                 if (!sourceAttached) return@collect
                 mutable.update {
                     it.copy(
-                        positionMs = value.positionMs,
-                        durationMs =
-                            if (value.durationMs > 0) value.durationMs
-                            else it.current?.duration?.times(1000L) ?: 0,
-                        playing = value.playing,
-                        seekable = value.seekable,
-                        playbackLoading = value.buffering && wantPlay,
+                        playback =
+                            it.playback.copy(
+                                positionMs = value.positionMs,
+                                durationMs =
+                                    if (value.durationMs > 0) value.durationMs
+                                    else it.current?.duration?.times(1000L) ?: 0,
+                                playing = value.playing,
+                                seekable = value.seekable,
+                                playbackLoading = value.buffering && wantPlay,
+                            )
                     )
                 }
                 if (value.seekable)
@@ -153,7 +173,9 @@ class LocalController(
                 if (value.playing && !logged) {
                     state.value.current?.let { library.recordPlay(it) }
                     logged = true
-                    mutable.update { it.copy(history = library.history()) }
+                    mutable.update {
+                        it.copy(libraryState = it.libraryState.copy(history = library.history()))
+                    }
                 }
                 if (!value.ended && value.playing) endHandled = false
                 if (value.ended && !endHandled) {
@@ -170,11 +192,14 @@ class LocalController(
                     mutable.update {
                         it.copy(
                             status = value.error,
-                            playbackError = value.error,
-                            playing = false,
-                            seekable = false,
-                            loading = false,
-                            playbackLoading = false,
+                            playback =
+                                it.playback.copy(
+                                    playbackError = value.error,
+                                    playing = false,
+                                    seekable = false,
+                                    loading = false,
+                                    playbackLoading = false,
+                                ),
                         )
                     }
                     toast(value.error)
@@ -190,7 +215,9 @@ class LocalController(
                 try {
                     val tracks = withContext(ioDispatcher) { source.localTracks() }
                     if (state.value.view == LibraryView.LOCAL)
-                        mutable.update { it.copy(visibleTracks = tracks) }
+                        mutable.update {
+                            it.copy(libraryState = it.libraryState.copy(visibleTracks = tracks))
+                        }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -202,7 +229,7 @@ class LocalController(
     override fun importLocalFiles(paths: List<String>) {
         if (paths.isEmpty() || state.value.localImporting) return
         showView(LibraryView.LOCAL)
-        mutable.update { it.copy(localImporting = true) }
+        mutable.update { it.copy(libraryState = it.libraryState.copy(localImporting = true)) }
         localImportJob =
             scope.launch {
                 try {
@@ -216,7 +243,9 @@ class LocalController(
                 } catch (_: Exception) {
                     toast("Не удалось импортировать аудиофайлы")
                 } finally {
-                    mutable.update { it.copy(localImporting = false) }
+                    mutable.update {
+                        it.copy(libraryState = it.libraryState.copy(localImporting = false))
+                    }
                 }
             }
     }
@@ -244,22 +273,28 @@ class LocalController(
             preferences[target.view.key + ":" + target.playlistId] ?: Pair("", LocalOrder.CUSTOM)
         mutable.update {
             it.copy(
-                view = target.view,
-                playlistId = target.playlistId,
-                visibleTracks =
-                    when (target.view) {
-                        LibraryView.LIKES -> it.likes
-                        LibraryView.HISTORY -> it.history
-                        LibraryView.SEARCH -> searchResults
-                        LibraryView.PLAYLIST ->
-                            target.playlistId?.let(library::playlistTracks).orEmpty()
-                        else -> emptyList()
-                    },
-                localFilter = prefs.first,
-                localOrder = prefs.second,
-                selectedIds = emptySet(),
-                canGoBack = navigationIndex > 0,
-                canGoForward = navigationIndex < navigation.lastIndex,
+                navigationState =
+                    it.navigationState.copy(
+                        view = target.view,
+                        playlistId = target.playlistId,
+                        localFilter = prefs.first,
+                        localOrder = prefs.second,
+                        selectedIds = emptySet(),
+                        canGoBack = navigationIndex > 0,
+                        canGoForward = navigationIndex < navigation.lastIndex,
+                    ),
+                libraryState =
+                    it.libraryState.copy(
+                        visibleTracks =
+                            when (target.view) {
+                                LibraryView.LIKES -> it.likes
+                                LibraryView.HISTORY -> it.history
+                                LibraryView.SEARCH -> searchResults
+                                LibraryView.PLAYLIST ->
+                                    target.playlistId?.let(library::playlistTracks).orEmpty()
+                                else -> emptyList()
+                            }
+                    ),
             )
         }
         selectionAnchor = null
@@ -283,12 +318,22 @@ class LocalController(
     }
 
     override fun setLocalFilter(value: String) {
-        mutable.update { it.copy(localFilter = value, selectedIds = emptySet()) }
+        mutable.update {
+            it.copy(
+                navigationState =
+                    it.navigationState.copy(localFilter = value, selectedIds = emptySet())
+            )
+        }
         selectionAnchor = null
     }
 
     override fun setLocalOrder(value: LocalOrder) {
-        mutable.update { it.copy(localOrder = value, selectedIds = emptySet()) }
+        mutable.update {
+            it.copy(
+                navigationState =
+                    it.navigationState.copy(localOrder = value, selectedIds = emptySet())
+            )
+        }
         selectionAnchor = null
     }
 
@@ -302,25 +347,38 @@ class LocalController(
             else setOf(id)
         mutable.update {
             it.copy(
-                selectedIds =
-                    when {
-                        shift && control -> it.selectedIds + chosen
-                        shift -> chosen
-                        control ->
-                            if (id in it.selectedIds) it.selectedIds - id else it.selectedIds + id
-                        else -> chosen
-                    }
+                navigationState =
+                    it.navigationState.copy(
+                        selectedIds =
+                            when {
+                                shift && control -> it.selectedIds + chosen
+                                shift -> chosen
+                                control ->
+                                    if (id in it.selectedIds) it.selectedIds - id
+                                    else it.selectedIds + id
+                                else -> chosen
+                            }
+                    )
             )
         }
         if (!shift) selectionAnchor = id
     }
 
     override fun selectAll() {
-        mutable.update { it.copy(selectedIds = displayedTracks(it).map { t -> t.id }.toSet()) }
+        mutable.update {
+            it.copy(
+                navigationState =
+                    it.navigationState.copy(
+                        selectedIds = displayedTracks(it).map { t -> t.id }.toSet()
+                    )
+            )
+        }
     }
 
     override fun clearSelection() {
-        mutable.update { it.copy(selectedIds = emptySet()) }
+        mutable.update {
+            it.copy(navigationState = it.navigationState.copy(selectedIds = emptySet()))
+        }
         selectionAnchor = null
     }
 
@@ -335,7 +393,12 @@ class LocalController(
         }
         refreshCollections()
         if (s.view == LibraryView.PLAYLIST)
-            mutable.update { it.copy(visibleTracks = library.playlistTracks(s.playlistId!!)) }
+            mutable.update {
+                it.copy(
+                    libraryState =
+                        it.libraryState.copy(visibleTracks = library.playlistTracks(s.playlistId!!))
+                )
+            }
         clearSelection()
         toast("Удалено из подборки: ${ids.size}")
     }
@@ -349,7 +412,9 @@ class LocalController(
     }
 
     private fun publishQueue() {
-        mutable.update { it.copy(queue = queue.tracks, queueIndex = queue.index) }
+        mutable.update {
+            it.copy(queueState = it.queueState.copy(queue = queue.tracks, queueIndex = queue.index))
+        }
     }
 
     override fun reorderQueue(ids: List<String>) {
@@ -364,7 +429,9 @@ class LocalController(
         val id = s.playlistId ?: return
         if (s.localFilter.isNotBlank() || s.localOrder != LocalOrder.CUSTOM) return
         library.reorderPlaylist(id, ids)
-        mutable.update { it.copy(visibleTracks = library.playlistTracks(id)) }
+        mutable.update {
+            it.copy(libraryState = it.libraryState.copy(visibleTracks = library.playlistTracks(id)))
+        }
         refreshCollections()
     }
 
@@ -405,10 +472,13 @@ class LocalController(
             else emptyList()
         mutable.update {
             it.copy(
-                versionReference = reference,
-                versions = saved,
-                versionsLoading = true,
-                versionError = "",
+                versionsState =
+                    it.versionsState.copy(
+                        versionReference = reference,
+                        versions = saved,
+                        versionsLoading = true,
+                        versionError = "",
+                    )
             )
         }
         versionJob =
@@ -418,8 +488,12 @@ class LocalController(
                     if (generation == versionGeneration)
                         mutable.update {
                             it.copy(
-                                versions = (saved + versions).distinctBy { v -> v.track.id },
-                                versionsLoading = false,
+                                versionsState =
+                                    it.versionsState.copy(
+                                        versions =
+                                            (saved + versions).distinctBy { v -> v.track.id },
+                                        versionsLoading = false,
+                                    )
                             )
                         }
                 } catch (e: CancellationException) {
@@ -428,8 +502,12 @@ class LocalController(
                     if (generation == versionGeneration)
                         mutable.update {
                             it.copy(
-                                versionsLoading = false,
-                                versionError = "Не удалось проверить другие записи. Повтори запрос.",
+                                versionsState =
+                                    it.versionsState.copy(
+                                        versionsLoading = false,
+                                        versionError =
+                                            "Не удалось проверить другие записи. Повтори запрос.",
+                                    )
                             )
                         }
                 }
@@ -439,7 +517,12 @@ class LocalController(
     override fun closeVersions() {
         versionJob?.cancel()
         versionGeneration++
-        mutable.update { it.copy(versionReference = null, versionsLoading = false) }
+        mutable.update {
+            it.copy(
+                versionsState =
+                    it.versionsState.copy(versionReference = null, versionsLoading = false)
+            )
+        }
     }
 
     override fun chooseVersion(original: Track, replacement: Track) {
@@ -459,7 +542,7 @@ class LocalController(
     private fun loadLyrics(track: Track, force: Boolean = false) {
         lyricsJob?.cancel()
         val generation = playGeneration
-        mutable.update { it.copy(lyricsLoading = true) }
+        mutable.update { it.copy(lyricsState = it.lyricsState.copy(lyricsLoading = true)) }
         lyricsJob =
             scope.launch {
                 try {
@@ -467,10 +550,13 @@ class LocalController(
                     if (generation != playGeneration) return@launch
                     mutable.update {
                         it.copy(
-                            lyrics = packet.lines,
-                            lyricsPacket = packet,
-                            lyricsLoading = false,
-                            approximateWords = packet.approximateWords,
+                            lyricsState =
+                                it.lyricsState.copy(
+                                    lyrics = packet.lines,
+                                    lyricsPacket = packet,
+                                    lyricsLoading = false,
+                                    approximateWords = packet.approximateWords,
+                                )
                         )
                     }
                     if (packet.state == "synced" && packet.approximateWords) {
@@ -479,9 +565,12 @@ class LocalController(
                         if (generation == playGeneration)
                             mutable.update {
                                 it.copy(
-                                    lyrics = richer.lines,
-                                    lyricsPacket = richer,
-                                    approximateWords = richer.approximateWords,
+                                    lyricsState =
+                                        it.lyricsState.copy(
+                                            lyrics = richer.lines,
+                                            lyricsPacket = richer,
+                                            approximateWords = richer.approximateWords,
+                                        )
                                 )
                             }
                     }
@@ -491,12 +580,15 @@ class LocalController(
                     if (generation == playGeneration)
                         mutable.update {
                             it.copy(
-                                lyricsLoading = false,
-                                lyricsPacket =
-                                    LyricsPacket(
-                                        message =
-                                            "Не удалось получить текст. Можно повторить запрос."
-                                    ),
+                                lyricsState =
+                                    it.lyricsState.copy(
+                                        lyricsLoading = false,
+                                        lyricsPacket =
+                                            LyricsPacket(
+                                                message =
+                                                    "Не удалось получить текст. Можно повторить запрос."
+                                            ),
+                                    )
                             )
                         }
                 }
@@ -519,17 +611,22 @@ class LocalController(
                     if (generation == playGeneration)
                         mutable.update {
                             it.copy(
-                                lyrics = packet.lines,
-                                lyricsPacket = packet,
-                                approximateWords = packet.approximateWords,
-                                lyricsLoading = false,
+                                lyricsState =
+                                    it.lyricsState.copy(
+                                        lyrics = packet.lines,
+                                        lyricsPacket = packet,
+                                        approximateWords = packet.approximateWords,
+                                        lyricsLoading = false,
+                                    )
                             )
                         }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
                     if (generation == playGeneration) {
-                        mutable.update { it.copy(lyricsLoading = false) }
+                        mutable.update {
+                            it.copy(lyricsState = it.lyricsState.copy(lyricsLoading = false))
+                        }
                         toast("Не удалось прочитать файл текста")
                     }
                 }
@@ -538,11 +635,11 @@ class LocalController(
 
     override fun setReducedMotion(value: Boolean) {
         library.setSetting("reduced_motion", if (value) "on" else "off")
-        mutable.update { it.copy(reducedMotion = value) }
+        mutable.update { it.copy(navigationState = it.navigationState.copy(reducedMotion = value)) }
     }
 
     override fun setSearchOrder(value: SearchOrder) {
-        mutable.update { it.copy(searchOrder = value) }
+        mutable.update { it.copy(searchState = it.searchState.copy(searchOrder = value)) }
         if (state.value.query.isNotBlank()) startSearch(state.value.query, 40, false)
     }
 
@@ -597,9 +694,12 @@ class LocalController(
     private fun refreshCollections() {
         mutable.update {
             it.copy(
-                likes = library.likes(),
-                history = library.history(),
-                playlists = library.playlists(),
+                libraryState =
+                    it.libraryState.copy(
+                        likes = library.likes(),
+                        history = library.history(),
+                        playlists = library.playlists(),
+                    )
             )
         }
     }
@@ -622,14 +722,20 @@ class LocalController(
         if (!expanding) searchResults = emptyList()
         mutable.update {
             it.copy(
-                query = input,
-                searchLoading = true,
-                visibleTracks =
-                    if (!expanding && it.view == LibraryView.SEARCH) emptyList()
-                    else it.visibleTracks,
-                searchLimit = if (expanding) it.searchLimit else 40,
-                canLoadMore = if (expanding) it.canLoadMore else false,
                 status = "Ищем музыку…",
+                searchState =
+                    it.searchState.copy(
+                        query = input,
+                        searchLoading = true,
+                        searchLimit = if (expanding) it.searchLimit else 40,
+                        canLoadMore = if (expanding) it.canLoadMore else false,
+                    ),
+                libraryState =
+                    it.libraryState.copy(
+                        visibleTracks =
+                            if (!expanding && it.view == LibraryView.SEARCH) emptyList()
+                            else it.visibleTracks
+                    ),
             )
         }
         searchJob =
@@ -641,15 +747,21 @@ class LocalController(
                         searchResults = results
                         mutable.update {
                             it.copy(
-                                visibleTracks =
-                                    if (it.view == LibraryView.SEARCH) results
-                                    else it.visibleTracks,
-                                searchLoading = false,
-                                searchLimit = limit,
-                                canLoadMore = results.size >= limit && limit < 120,
                                 status =
                                     if (results.isEmpty()) "Ничего не найдено"
                                     else "Найдено: ${results.size}",
+                                libraryState =
+                                    it.libraryState.copy(
+                                        visibleTracks =
+                                            if (it.view == LibraryView.SEARCH) results
+                                            else it.visibleTracks
+                                    ),
+                                searchState =
+                                    it.searchState.copy(
+                                        searchLoading = false,
+                                        searchLimit = limit,
+                                        canLoadMore = results.size >= limit && limit < 120,
+                                    ),
                             )
                         }
                     }
@@ -659,9 +771,9 @@ class LocalController(
                     if (generation == searchGeneration)
                         mutable.update {
                             it.copy(
-                                searchLoading = false,
                                 status =
                                     "Не удалось выполнить поиск. Проверь соединение и повтори запрос.",
+                                searchState = it.searchState.copy(searchLoading = false),
                             )
                         }
                 }
@@ -673,8 +785,9 @@ class LocalController(
         val generation = ++suggestionGeneration
         mutable.update {
             it.copy(
-                resolvingSuggestionId = suggestion.catalogId,
                 status = "Ищем запись для рекомендации…",
+                recommendationState =
+                    it.recommendationState.copy(resolvingSuggestionId = suggestion.catalogId),
             )
         }
         suggestionJob =
@@ -691,8 +804,9 @@ class LocalController(
                     if (generation == suggestionGeneration) {
                         mutable.update {
                             it.copy(
-                                resolvingSuggestionId = null,
                                 status = "Подходящая запись не найдена",
+                                recommendationState =
+                                    it.recommendationState.copy(resolvingSuggestionId = null),
                             )
                         }
                         toast("Подходящая запись не найдена")
@@ -710,11 +824,19 @@ class LocalController(
         val seeds = state.value.likes
         if (seeds.isEmpty()) {
             mutable.update {
-                it.copy(suggestions = emptyList(), status = "Поставь лайки любимым трекам")
+                it.copy(
+                    status = "Поставь лайки любимым трекам",
+                    recommendationState = it.recommendationState.copy(suggestions = emptyList()),
+                )
             }
             return
         }
-        mutable.update { it.copy(recommendationsLoading = true, status = "Подбираем музыку…") }
+        mutable.update {
+            it.copy(
+                status = "Подбираем музыку…",
+                recommendationState = it.recommendationState.copy(recommendationsLoading = true),
+            )
+        }
         recommendationJob =
             scope.launch {
                 try {
@@ -722,11 +844,14 @@ class LocalController(
                         withContext(ioDispatcher) { source.recommend(seeds, state.value.history) }
                     mutable.update {
                         it.copy(
-                            suggestions = items,
-                            recommendationsLoading = false,
                             status =
                                 if (items.isEmpty()) "В музыкальном каталоге недостаточно данных"
                                 else "Рекомендации готовы",
+                            recommendationState =
+                                it.recommendationState.copy(
+                                    suggestions = items,
+                                    recommendationsLoading = false,
+                                ),
                         )
                     }
                 } catch (e: CancellationException) {
@@ -734,8 +859,9 @@ class LocalController(
                 } catch (e: Exception) {
                     mutable.update {
                         it.copy(
-                            recommendationsLoading = false,
                             status = "Рекомендации пока недоступны",
+                            recommendationState =
+                                it.recommendationState.copy(recommendationsLoading = false),
                         )
                     }
                 }
@@ -770,22 +896,27 @@ class LocalController(
         queue.begin(track, context, recordHistory = !preserveTraversal)
         mutable.update {
             it.copy(
-                playbackReference = track,
-                playbackError = null,
-                lyricsLoading = false,
-                resolvingSuggestionId = null,
-                current = selected,
-                queue = queue.tracks,
-                queueIndex = queue.index,
-                loading = true,
-                playbackLoading = true,
-                playing = false,
-                seekable = false,
-                positionMs = 0,
-                durationMs = selected.duration * 1000L,
-                lyrics = emptyList(),
-                lyricsPacket = LyricsPacket(),
                 status = "Подключаем запись…",
+                playback =
+                    it.playback.copy(
+                        playbackReference = track,
+                        playbackError = null,
+                        current = selected,
+                        loading = true,
+                        playbackLoading = true,
+                        playing = false,
+                        seekable = false,
+                        positionMs = 0,
+                        durationMs = selected.duration * 1000L,
+                    ),
+                lyricsState =
+                    it.lyricsState.copy(
+                        lyricsLoading = false,
+                        lyrics = emptyList(),
+                        lyricsPacket = LyricsPacket(),
+                    ),
+                recommendationState = it.recommendationState.copy(resolvingSuggestionId = null),
+                queueState = it.queueState.copy(queue = queue.tracks, queueIndex = queue.index),
             )
         }
         save()
@@ -800,9 +931,9 @@ class LocalController(
                         sourceAttached = true
                         mutable.update {
                             it.copy(
-                                loading = false,
-                                playbackLoading = false,
                                 status = "Подключаем запись…",
+                                playback =
+                                    it.playback.copy(loading = false, playbackLoading = false),
                             )
                         }
                         loadLyrics(selected)
@@ -814,11 +945,14 @@ class LocalController(
                     if (generation == playGeneration)
                         mutable.update {
                             it.copy(
-                                playbackError = "Запись недоступна. Повтори попытку.",
-                                loading = false,
-                                playbackLoading = false,
-                                playing = false,
                                 status = "Запись недоступна. Повтори попытку.",
+                                playback =
+                                    it.playback.copy(
+                                        playbackError = "Запись недоступна. Повтори попытку.",
+                                        loading = false,
+                                        playbackLoading = false,
+                                        playing = false,
+                                    ),
                             )
                         }
                 }
@@ -844,11 +978,15 @@ class LocalController(
         // Queue navigation must never replace the queue with an unrelated visible list.
         preserveTraversal = !record
         try {
-            mutable.update { it.copy(view = LibraryView.QUEUE) }
+            mutable.update {
+                it.copy(navigationState = it.navigationState.copy(view = LibraryView.QUEUE))
+            }
             play(track)
         } finally {
             preserveTraversal = false
-            mutable.update { it.copy(view = previousView) }
+            mutable.update {
+                it.copy(navigationState = it.navigationState.copy(view = previousView))
+            }
         }
     }
 
@@ -890,14 +1028,16 @@ class LocalController(
             runCatching { audio.selectDevice(selected) }
             library.setSetting("mpv_audio_device", selected)
         }
-        mutable.update { it.copy(audioDevices = devices, audioDevice = selected) }
+        mutable.update {
+            it.copy(playback = it.playback.copy(audioDevices = devices, audioDevice = selected))
+        }
     }
 
     override fun selectAudioDevice(id: String) {
         runCatching { audio.selectDevice(id) }
             .onSuccess {
                 library.setSetting("mpv_audio_device", id)
-                mutable.update { it.copy(audioDevice = id) }
+                mutable.update { it.copy(playback = it.playback.copy(audioDevice = id)) }
             }
             .onFailure { mutable.update { it.copy(status = "Не удалось переключить аудиовыход") } }
     }
@@ -919,8 +1059,11 @@ class LocalController(
         else
             mutable.update {
                 it.copy(
-                    canGoBack = navigationIndex > 0,
-                    canGoForward = navigationIndex < navigation.lastIndex,
+                    navigationState =
+                        it.navigationState.copy(
+                            canGoBack = navigationIndex > 0,
+                            canGoForward = navigationIndex < navigation.lastIndex,
+                        )
                 )
             }
         preferences.remove("playlist:$id")
@@ -954,9 +1097,11 @@ class LocalController(
             }
             return
         }
-        if (s.current == null) {
+        val current = s.current
+        if (current == null) {
             if (s.queue.isNotEmpty()) playQueued(0)
-        } else if (!sourceAttached) play(s.queue.getOrNull(s.queueIndex) ?: s.current)
+        } else if (!sourceAttached)
+            play(s.queue.getOrNull(s.queueIndex) ?: requireNotNull(s.current))
         else if (audio.state.value.ended) {
             wantPlay = true
             audio.seek(0)
@@ -972,7 +1117,8 @@ class LocalController(
         val target = positionMs.coerceIn(0, s.durationMs.coerceAtLeast(0))
         if (!sourceAttached) {
             if (s.current != null) {
-                if (!s.playbackLoading) play(s.queue.getOrNull(s.queueIndex) ?: s.current)
+                if (!s.playbackLoading)
+                    play(s.queue.getOrNull(s.queueIndex) ?: requireNotNull(s.current))
                 pendingSeek = target
             }
             return
@@ -983,7 +1129,7 @@ class LocalController(
     override fun setVolume(volume: Float) {
         val value = volume.coerceIn(0f, 1f)
         audio.setVolume(value)
-        mutable.update { it.copy(volume = value) }
+        mutable.update { it.copy(playback = it.playback.copy(volume = value)) }
         volumeJob?.cancel()
         volumeJob =
             scope.launch {
@@ -995,7 +1141,15 @@ class LocalController(
     override fun toggleLike(track: Track) {
         library.like(track, state.value.likes.none { it.id == track.id })
         recommendationJob?.cancel()
-        mutable.update { it.copy(suggestions = emptyList(), recommendationsLoading = false) }
+        mutable.update {
+            it.copy(
+                recommendationState =
+                    it.recommendationState.copy(
+                        suggestions = emptyList(),
+                        recommendationsLoading = false,
+                    )
+            )
+        }
         refreshCollections()
         if (state.value.view == LibraryView.LIKES) showView(LibraryView.LIKES)
         if (state.value.view == LibraryView.RESONANCE) recommendations()
@@ -1021,20 +1175,22 @@ class LocalController(
     }
 
     override fun toggleShuffle() {
-        mutable.update { it.copy(shuffle = !it.shuffle) }
+        mutable.update { it.copy(queueState = it.queueState.copy(shuffle = !it.shuffle)) }
         queue.shuffleChanged()
         library.setSetting("shuffle", if (state.value.shuffle) "on" else "off")
         prepareNext()
     }
 
     override fun cycleRepeat() {
-        mutable.update { it.copy(repeatMode = it.repeatMode.next()) }
+        mutable.update {
+            it.copy(queueState = it.queueState.copy(repeatMode = it.repeatMode.next()))
+        }
         library.setSetting("repeat_mode", state.value.repeatMode.key)
         prepareNext()
     }
 
     override fun openNowPlaying(open: Boolean) {
-        mutable.update { it.copy(expanded = open) }
+        mutable.update { it.copy(playback = it.playback.copy(expanded = open)) }
         val s = state.value
         if (
             open &&
@@ -1043,15 +1199,15 @@ class LocalController(
                 s.lyricsPacket.lines.isEmpty() &&
                 s.lyricsPacket.plainText.isBlank()
         )
-            loadLyrics(s.current)
+            s.current?.let { loadLyrics(it) }
     }
 
     override fun setLyricsFocus(focus: Boolean) {
-        mutable.update { it.copy(lyricsFocus = focus) }
+        mutable.update { it.copy(playback = it.playback.copy(lyricsFocus = focus)) }
     }
 
     override fun toggleQueue() {
-        mutable.update { it.copy(queueVisible = !it.queueVisible) }
+        mutable.update { it.copy(queueState = it.queueState.copy(queueVisible = !it.queueVisible)) }
     }
 
     fun close() {

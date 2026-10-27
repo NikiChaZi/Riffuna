@@ -21,6 +21,8 @@ import androidx.compose.ui.focus.*
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.unit.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import riffuna.core.*
 
 @Composable
@@ -30,7 +32,9 @@ fun RiffunaApp(
     onImport: () -> Unit,
     onImportMusic: () -> Unit = {},
 ) {
-    val state by controller.state.collectAsState()
+    val screenFlow =
+        remember(controller) { controller.state.map { it.screenSnapshot() }.distinctUntilChanged() }
+    val state by screenFlow.collectAsState(initial = controller.state.value.screenSnapshot())
     var query by remember { mutableStateOf(state.query) }
     LaunchedEffect(state.query) { query = state.query }
     var typing by remember { mutableStateOf(false) }

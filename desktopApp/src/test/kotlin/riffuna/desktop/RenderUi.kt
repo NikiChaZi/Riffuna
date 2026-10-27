@@ -34,42 +34,75 @@ fun main() {
             } ?: LyricsPacket()
         val base =
             AppState(
-                likes = likes,
-                history = history,
-                queue = queue.first,
-                queueIndex = queue.second,
-                current = current,
-                durationMs = (current?.duration ?: 0) * 1000L,
-                playlists = library.playlists(),
-                volume = .5f,
-                lyrics = lyrics.lines,
-                lyricsPacket = lyrics,
-                seekable = true,
-                reducedMotion = true,
+                libraryState =
+                    LibraryUiState(
+                        likes = likes,
+                        history = history,
+                        playlists = library.playlists(),
+                    ),
+                queueState = QueueUiState(queue = queue.first, queueIndex = queue.second),
+                playback =
+                    PlaybackUiState(
+                        current = current,
+                        durationMs = (current?.duration ?: 0) * 1000L,
+                        volume = .5f,
+                        seekable = true,
+                    ),
+                lyricsState = LyricsUiState(lyrics = lyrics.lines, lyricsPacket = lyrics),
+                navigationState = NavigationUiState(reducedMotion = true),
             )
         val scenes =
             listOf(
                 "home" to base,
-                "likes" to base.copy(view = LibraryView.LIKES, visibleTracks = likes),
+                "likes" to
+                    base.copy(
+                        navigationState = base.navigationState.copy(view = LibraryView.LIKES),
+                        libraryState = base.libraryState.copy(visibleTracks = likes),
+                    ),
                 "search" to
                     base.copy(
-                        view = LibraryView.SEARCH,
-                        query = "Дора",
-                        visibleTracks = likes.filter { it.artist.contains("Дора", true) },
+                        navigationState = base.navigationState.copy(view = LibraryView.SEARCH),
+                        searchState = base.searchState.copy(query = "Дора"),
+                        libraryState =
+                            base.libraryState.copy(
+                                visibleTracks = likes.filter { it.artist.contains("Дора", true) }
+                            ),
                     ),
-                "playlists" to base.copy(view = LibraryView.PLAYLISTS),
-                "expanded" to base.copy(expanded = true, positionMs = 65000),
+                "playlists" to
+                    base.copy(
+                        navigationState = base.navigationState.copy(view = LibraryView.PLAYLISTS)
+                    ),
+                "expanded" to
+                    base.copy(playback = base.playback.copy(expanded = true, positionMs = 65000)),
                 "lyrics-focus" to
-                    base.copy(expanded = true, lyricsFocus = true, positionMs = 65000),
+                    base.copy(
+                        playback =
+                            base.playback.copy(
+                                expanded = true,
+                                lyricsFocus = true,
+                                positionMs = 65000,
+                            )
+                    ),
                 "playback-error" to
                     base.copy(
-                        view = LibraryView.LIKES,
-                        visibleTracks = likes,
-                        playbackError = "Запись недоступна. Повтори попытку.",
+                        navigationState = base.navigationState.copy(view = LibraryView.LIKES),
+                        libraryState = base.libraryState.copy(visibleTracks = likes),
+                        playback =
+                            base.playback.copy(
+                                playbackError = "Запись недоступна. Повтори попытку."
+                            ),
                     ),
-                "compact-queue" to base.copy(view = LibraryView.LIKES, visibleTracks = likes),
+                "compact-queue" to
+                    base.copy(
+                        navigationState = base.navigationState.copy(view = LibraryView.LIKES),
+                        libraryState = base.libraryState.copy(visibleTracks = likes),
+                    ),
                 "compact" to
-                    base.copy(view = LibraryView.LIKES, visibleTracks = likes, queueVisible = false),
+                    base.copy(
+                        navigationState = base.navigationState.copy(view = LibraryView.LIKES),
+                        libraryState = base.libraryState.copy(visibleTracks = likes),
+                        queueState = base.queueState.copy(queueVisible = false),
+                    ),
             )
         for ((name, state) in scenes) {
             val flow = MutableStateFlow(state)

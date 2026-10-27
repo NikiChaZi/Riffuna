@@ -57,58 +57,237 @@ data class LyricsPacket(
 @Serializable
 data class RecordingVersion(val track: Track, val label: String, val evidence: String)
 
-data class AppState(
+data class PlaybackUiState(
     val loading: Boolean = false,
     val playbackLoading: Boolean = false,
-    val searchLoading: Boolean = false,
-    val localImporting: Boolean = false,
-    val recommendationsLoading: Boolean = false,
     val playing: Boolean = false,
-    val queueVisible: Boolean = true,
     val playbackError: String? = null,
     val expanded: Boolean = false,
     val lyricsFocus: Boolean = false,
+    val audioDevices: List<AudioDevice> = emptyList(),
+    val audioDevice: String = "auto",
+    val playbackReference: Track? = null,
+    val current: Track? = null,
+    val seekable: Boolean = false,
+    val positionMs: Long = 0,
+    val durationMs: Long = 0,
+    val volume: Float = .65f,
+)
+
+data class QueueUiState(
+    val queueVisible: Boolean = true,
     val shuffle: Boolean = false,
-    val resolvingSuggestionId: String? = null,
-    val approximateWords: Boolean = true,
-    val suggestions: List<Suggestion> = emptyList(),
-    val view: LibraryView = LibraryView.HOME,
+    val repeatMode: RepeatMode = RepeatMode.OFF,
+    val queue: List<Track> = emptyList(),
+    val queueIndex: Int = -1,
+)
+
+data class LibraryUiState(
+    val localImporting: Boolean = false,
+    val visibleTracks: List<Track> = emptyList(),
+    val likes: List<Track> = emptyList(),
+    val history: List<Track> = emptyList(),
+    val playlists: List<PlaylistSummary> = emptyList(),
+)
+
+data class SearchUiState(
+    val searchLoading: Boolean = false,
     val query: String = "",
+    val searchOrder: SearchOrder = SearchOrder.RELEVANCE,
+    val searchLimit: Int = 40,
+    val canLoadMore: Boolean = false,
+)
+
+data class NavigationUiState(
+    val view: LibraryView = LibraryView.HOME,
     val localFilter: String = "",
     val localOrder: LocalOrder = LocalOrder.CUSTOM,
     val selectedIds: Set<String> = emptySet(),
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
     val reducedMotion: Boolean = false,
-    val searchOrder: SearchOrder = SearchOrder.RELEVANCE,
-    val searchLimit: Int = 40,
-    val canLoadMore: Boolean = false,
+    val playlistId: Long? = null,
+)
+
+data class LyricsUiState(
+    val approximateWords: Boolean = true,
     val lyricsPacket: LyricsPacket = LyricsPacket(),
     val lyricsLoading: Boolean = false,
+    val lyrics: List<LyricLine> = emptyList(),
+)
+
+data class RecommendationUiState(
+    val recommendationsLoading: Boolean = false,
+    val resolvingSuggestionId: String? = null,
+    val suggestions: List<Suggestion> = emptyList(),
+)
+
+data class VersionsUiState(
     val versionReference: Track? = null,
     val versions: List<RecordingVersion> = emptyList(),
     val versionsLoading: Boolean = false,
     val versionError: String = "",
+)
+
+data class AppState(
+    val playback: PlaybackUiState = PlaybackUiState(),
+    val queueState: QueueUiState = QueueUiState(),
+    val libraryState: LibraryUiState = LibraryUiState(),
+    val searchState: SearchUiState = SearchUiState(),
+    val navigationState: NavigationUiState = NavigationUiState(),
+    val lyricsState: LyricsUiState = LyricsUiState(),
+    val recommendationState: RecommendationUiState = RecommendationUiState(),
+    val versionsState: VersionsUiState = VersionsUiState(),
     val toast: String = "",
     val status: String = "Готово к музыке",
-    val repeatMode: RepeatMode = RepeatMode.OFF,
-    val playlistId: Long? = null,
-    val audioDevices: List<AudioDevice> = emptyList(),
-    val audioDevice: String = "auto",
-    val visibleTracks: List<Track> = emptyList(),
-    val likes: List<Track> = emptyList(),
-    val history: List<Track> = emptyList(),
-    val queue: List<Track> = emptyList(),
-    val playbackReference: Track? = null,
-    val current: Track? = null,
-    val queueIndex: Int = -1,
-    val seekable: Boolean = false,
-    val positionMs: Long = 0,
-    val durationMs: Long = 0,
-    val volume: Float = .65f,
-    val playlists: List<PlaylistSummary> = emptyList(),
-    val lyrics: List<LyricLine> = emptyList(),
-)
+) {
+    val loading: Boolean
+        get() = playback.loading
+
+    val playbackLoading: Boolean
+        get() = playback.playbackLoading
+
+    val searchLoading: Boolean
+        get() = searchState.searchLoading
+
+    val localImporting: Boolean
+        get() = libraryState.localImporting
+
+    val recommendationsLoading: Boolean
+        get() = recommendationState.recommendationsLoading
+
+    val playing: Boolean
+        get() = playback.playing
+
+    val queueVisible: Boolean
+        get() = queueState.queueVisible
+
+    val playbackError: String?
+        get() = playback.playbackError
+
+    val expanded: Boolean
+        get() = playback.expanded
+
+    val lyricsFocus: Boolean
+        get() = playback.lyricsFocus
+
+    val shuffle: Boolean
+        get() = queueState.shuffle
+
+    val resolvingSuggestionId: String?
+        get() = recommendationState.resolvingSuggestionId
+
+    val approximateWords: Boolean
+        get() = lyricsState.approximateWords
+
+    val suggestions: List<Suggestion>
+        get() = recommendationState.suggestions
+
+    val view: LibraryView
+        get() = navigationState.view
+
+    val query: String
+        get() = searchState.query
+
+    val localFilter: String
+        get() = navigationState.localFilter
+
+    val localOrder: LocalOrder
+        get() = navigationState.localOrder
+
+    val selectedIds: Set<String>
+        get() = navigationState.selectedIds
+
+    val canGoBack: Boolean
+        get() = navigationState.canGoBack
+
+    val canGoForward: Boolean
+        get() = navigationState.canGoForward
+
+    val reducedMotion: Boolean
+        get() = navigationState.reducedMotion
+
+    val searchOrder: SearchOrder
+        get() = searchState.searchOrder
+
+    val searchLimit: Int
+        get() = searchState.searchLimit
+
+    val canLoadMore: Boolean
+        get() = searchState.canLoadMore
+
+    val lyricsPacket: LyricsPacket
+        get() = lyricsState.lyricsPacket
+
+    val lyricsLoading: Boolean
+        get() = lyricsState.lyricsLoading
+
+    val versionReference: Track?
+        get() = versionsState.versionReference
+
+    val versions: List<RecordingVersion>
+        get() = versionsState.versions
+
+    val versionsLoading: Boolean
+        get() = versionsState.versionsLoading
+
+    val versionError: String
+        get() = versionsState.versionError
+
+    val repeatMode: RepeatMode
+        get() = queueState.repeatMode
+
+    val playlistId: Long?
+        get() = navigationState.playlistId
+
+    val audioDevices: List<AudioDevice>
+        get() = playback.audioDevices
+
+    val audioDevice: String
+        get() = playback.audioDevice
+
+    val visibleTracks: List<Track>
+        get() = libraryState.visibleTracks
+
+    val likes: List<Track>
+        get() = libraryState.likes
+
+    val history: List<Track>
+        get() = libraryState.history
+
+    val queue: List<Track>
+        get() = queueState.queue
+
+    val playbackReference: Track?
+        get() = playback.playbackReference
+
+    val current: Track?
+        get() = playback.current
+
+    val queueIndex: Int
+        get() = queueState.queueIndex
+
+    val seekable: Boolean
+        get() = playback.seekable
+
+    val positionMs: Long
+        get() = playback.positionMs
+
+    val durationMs: Long
+        get() = playback.durationMs
+
+    val volume: Float
+        get() = playback.volume
+
+    val playlists: List<PlaylistSummary>
+        get() = libraryState.playlists
+
+    val lyrics: List<LyricLine>
+        get() = lyricsState.lyrics
+}
+
+/** Screens do not observe the 10 Hz playback position; player and lyrics collect it locally. */
+fun AppState.screenSnapshot(): AppState = copy(playback = playback.copy(positionMs = 0))
 
 interface RiffunaController {
     fun importLocalFiles(paths: List<String>)

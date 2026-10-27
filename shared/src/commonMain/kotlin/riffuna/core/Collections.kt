@@ -26,6 +26,5 @@ fun displayedTracks(state: AppState): List<Track> {
     }
 }
 
-fun isCurrentTrack(state: AppState, track: Track) =
-    state.current != null &&
-        (state.current.id == track.id || state.playbackReference?.id == track.id)
+fun isCurrentTrack(state: AppState, track: Track): Boolean =
+    state.current?.let { it.id == track.id || state.playbackReference?.id == track.id } ?: false

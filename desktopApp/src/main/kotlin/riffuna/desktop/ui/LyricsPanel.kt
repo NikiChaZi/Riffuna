@@ -20,15 +20,21 @@ import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import riffuna.core.*
 
 @Composable
 fun LyricsPanel(
     controller: RiffunaController,
-    state: AppState,
+    screenState: AppState,
     onImport: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val playbackFlow =
+        remember(controller) { controller.state.map { it.playback }.distinctUntilChanged() }
+    val playback by playbackFlow.collectAsState(initial = screenState.playback)
+    val state = screenState.copy(playback = playback)
     val packet = state.lyricsPacket
     Column(modifier) {
         Row(

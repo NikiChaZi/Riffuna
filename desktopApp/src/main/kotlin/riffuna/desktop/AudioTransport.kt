@@ -9,7 +9,6 @@ import java.nio.ByteBuffer
 import java.nio.file.*
 import java.security.MessageDigest
 import java.time.Duration
-import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.*
 import kotlinx.serialization.json.*
@@ -91,6 +90,7 @@ class AudioTransport(private val directory: Path) : AutoCloseable {
     }
 
     private val bindings = linkedMapOf<String, Buffer>()
+    private val verifiedCache = VerifiedAudioCache()
     private var activeToken: String? = null
     @Volatile private var rangeBridge = ""
 
@@ -125,23 +125,7 @@ class AudioTransport(private val directory: Path) : AutoCloseable {
                 val path = directory.resolve(name + extension)
                 val size = Files.size(path)
                 check(size in 1..diskLimit && size == info["size"]!!.jsonPrimitive.long)
-                val checksum = MessageDigest.getInstance("SHA-256")
-                Files.newInputStream(path).use { input ->
-                    val chunk = ByteArray(256 * 1024)
-                    while (true) {
-                        val read = input.read(chunk)
-                        if (read < 0) break
-                        checksum.update(chunk, 0, read)
-                    }
-                }
-                check(
-                    checksum.digest().joinToString("") { "%02x".format(it) } ==
-                        info["sha256"]!!.jsonPrimitive.content
-                )
-                Files.setLastModifiedTime(
-                    path,
-                    java.nio.file.attribute.FileTime.from(Instant.now()),
-                )
+                check(verifiedCache.verify(path, size, info["sha256"]!!.jsonPrimitive.content))
                 path
             }
             .getOrNull()

@@ -16,15 +16,21 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import riffuna.core.*
 
 @Composable
 fun PlayerBar(
     controller: RiffunaController,
-    state: AppState,
+    screenState: AppState,
     coverModifier: Modifier = Modifier,
     showCover: Boolean = true,
 ) {
+    val playbackFlow =
+        remember(controller) { controller.state.map { it.playback }.distinctUntilChanged() }
+    val playback by playbackFlow.collectAsState(initial = screenState.playback)
+    val state = screenState.copy(playback = playback)
     var output by remember { mutableStateOf(false) }
     var rememberedVolume by remember { mutableFloatStateOf(.65f) }
     Surface(color = Color(0xFF191D21)) {

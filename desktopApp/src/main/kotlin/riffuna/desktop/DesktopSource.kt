@@ -226,6 +226,7 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
                     ?: error("Ссылка не ведёт к студийной музыкальной записи")
             )
         }
+        val relevance = SearchRelevance(input)
         val text = if (input.all { it in '\u0400'..'\u052f' }) "\"$input\"" else input
         val result =
             request(
@@ -239,19 +240,11 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
             result["tracks"]
                 ?.jsonArray
                 .orEmpty()
-                .mapNotNull { MusicRules.catalog(it.jsonObject, input) }
+                .mapNotNull { MusicRules.catalog(it.jsonObject, "") }
+                .filter { relevance.score(it) >= 0 }
                 .distinctBy { it.id }
                 .toMutableList()
-        if (
-            MusicRules.words(input).size >= 2 &&
-                ((tracks.size < 5 &&
-                    (tracks.maxOfOrNull { MusicRules.score(input, it.title, it.artist) } ?: -1.0) <
-                        175) ||
-                    MusicRules.musicalVersion.containsMatchIn(input) ||
-                    (input.none { it in '\u0400'..'\u052f' } &&
-                        (tracks.maxOfOrNull { MusicRules.score(input, it.title, it.artist) }
-                            ?: -1.0) < 175))
-        ) {
+        if (relevance.needsUploadFallback(tracks)) {
             val found =
                 runCatching {
                         request(
@@ -271,7 +264,7 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
                     .filter {
                         it.duration in 1..1200 &&
                             !MusicRules.excluded.containsMatchIn(it.title) &&
-                            MusicRules.score(input, it.title, it.artist) >= 0
+                            relevance.score(it) >= 0
                     }
                     .take(6)
             for (upload in uploads) {
@@ -306,7 +299,8 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
                             split.size == 2 &&
                                 MusicRules.words(split[0]).size <= 5 &&
                                 !MusicRules.musicalVersion.containsMatchIn(split[0]) &&
-                                MusicRules.score(input, split[1], split[0]) >= 0
+                                relevance.score(upload.copy(title = split[1], artist = split[0])) >=
+                                    0
                         )
                             upload.copy(title = split[1], artist = split[0])
                         else upload
@@ -342,9 +336,7 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
                 )
                 .take(limit)
         }
-        return unique
-            .sortedByDescending { MusicRules.score(input, it.title, it.artist) }
-            .take(limit)
+        return unique.sortedByDescending { relevance.score(it) }.take(limit)
     }
 
     override fun invalidate(track: Track) {
