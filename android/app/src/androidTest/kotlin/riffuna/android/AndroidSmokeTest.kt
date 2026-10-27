@@ -116,6 +116,84 @@ class AndroidSmokeTest {
     }
 
     @Test
+    fun expiredAudioLinkRefreshesWithoutUserRestart(): Unit = runBlocking {
+        val pcm = ByteArray(8000 * 2 * 3)
+        val header = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        header.put("RIFF".toByteArray()).putInt(pcm.size + 36).put("WAVEfmt ".toByteArray())
+        header
+            .putInt(16)
+            .putShort(1)
+            .putShort(1)
+            .putInt(8000)
+            .putInt(16000)
+            .putShort(2)
+            .putShort(16)
+        header.put("data".toByteArray()).putInt(pcm.size)
+        val bytes = header.array() + pcm
+        val renewals = java.util.concurrent.atomic.AtomicInteger()
+        val client =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    val expired = request.url.queryParameter("v") == "expired"
+                    val response =
+                        okhttp3.Response.Builder()
+                            .request(request)
+                            .protocol(okhttp3.Protocol.HTTP_1_1)
+                    if (expired)
+                        response
+                            .code(403)
+                            .message("Expired")
+                            .body(okhttp3.ResponseBody.create(null, byteArrayOf()))
+                            .build()
+                    else {
+                        val range =
+                            Regex("bytes=(\\d+)-(\\d+)")
+                                .matchEntire(request.header("Range").orEmpty())!!
+                        val from = range.groupValues[1].toInt()
+                        val until =
+                            minOf(range.groupValues[2].toLong(), bytes.lastIndex.toLong()).toInt()
+                        response
+                            .code(206)
+                            .message("Partial Content")
+                            .header("Content-Range", "bytes $from-$until/${bytes.size}")
+                            .body(
+                                okhttp3.ResponseBody.create(
+                                    null,
+                                    bytes.copyOfRange(from, until + 1),
+                                )
+                            )
+                            .build()
+                    }
+                }
+                .build()
+        val track = Track("bbbbbbbbbbb", "Recovery test", "Test", 3)
+        lateinit var audio: AndroidAudio
+        instrumentation.runOnMainSync {
+            audio = AndroidAudio(context, client, "test-recovery-${UUID.randomUUID()}") { track }
+            audio.setVolume(0f)
+            audio.refreshSource = {
+                renewals.incrementAndGet()
+                AudioSource("https://audio.googlevideo.com/videoplayback?itag=140&v=fresh")
+            }
+        }
+        try {
+            audio.open(
+                AudioSource("https://audio.googlevideo.com/videoplayback?itag=140&v=expired")
+            )
+            withTimeout(20000) {
+                while (!audio.state.value.playing) {
+                    audio.state.value.error?.let { error(it) }
+                    delay(50)
+                }
+            }
+            assertEquals(1, renewals.get())
+        } finally {
+            instrumentation.runOnMainSync { audio.close() }
+        }
+    }
+
+    @Test
     fun playbackContinuesInBackgroundAndMediaSessionPausesIt(): Unit = runBlocking {
         Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("liveNetwork") == "true")
         val name = "background-${UUID.randomUUID()}.sqlite3"
@@ -136,6 +214,7 @@ class AndroidSmokeTest {
         try {
             val track = graph.source.search("Дора Понарошку", 1).first()
             instrumentation.runOnMainSync { graph.controller.play(track) }
+            instrumentation.runOnMainSync { activity.moveTaskToBack(true) }
             withTimeout(120000) {
                 while (!graph.controller.state.value.playing) {
                     graph.controller.state.value.playbackError?.let { error(it) }
@@ -143,9 +222,9 @@ class AndroidSmokeTest {
                 }
             }
             val before = graph.controller.state.value.positionMs
-            instrumentation.runOnMainSync { activity.moveTaskToBack(true) }
+            instrumentation.uiAutomation.executeShellCommand("input keyevent 223").close()
             withTimeout(10000) {
-                while (graph.controller.state.value.positionMs < before + 2500) delay(100)
+                while (graph.controller.state.value.positionMs < before + 5000) delay(100)
             }
             assertTrue(graph.controller.state.value.playing)
             val token =
@@ -166,6 +245,7 @@ class AndroidSmokeTest {
             withTimeout(5000) { while (graph.controller.state.value.playing) delay(100) }
             android.util.Log.i("RiffunaTest", "BACKGROUND_AND_MEDIA_SESSION_OK")
         } finally {
+            instrumentation.uiAutomation.executeShellCommand("input keyevent 224").close()
             instrumentation.runOnMainSync {
                 media?.release()
                 activity.finish()
@@ -207,7 +287,7 @@ class AndroidSmokeTest {
     }
 
     @Test
-    fun browserSearchResolveAndSilentMedia3Playback() = runBlocking {
+    fun browserSearchResolveAndSilentMedia3Playback(): Unit = runBlocking {
         Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("liveNetwork") == "true")
         val name = "live-${UUID.randomUUID()}.sqlite3"
         val library = AndroidLibrary(context, name)
@@ -292,6 +372,28 @@ class AndroidSmokeTest {
                 while (kotlin.math.abs(audio!!.state.value.positionMs - 5000) > 1000) delay(100)
             }
             assertFalse(audio!!.state.value.playing)
+            withTimeout(45000) { while (audio!!.cached(track) == null) delay(100) }
+            instrumentation.runOnMainSync { audio!!.close() }
+            val offline =
+                OkHttpClient.Builder()
+                    .addInterceptor { throw java.io.IOException("Offline test") }
+                    .build()
+            instrumentation.runOnMainSync {
+                audio = AndroidAudio(context, offline) { track }
+                audio!!.setVolume(0f)
+            }
+            val cached = checkNotNull(audio!!.cached(track))
+            assertTrue(cached.uri.startsWith("riffuna-cache:"))
+            audio!!.open(cached)
+            withTimeout(15000) {
+                while (!audio!!.state.value.playing) {
+                    audio!!.state.value.error?.let { error(it) }
+                    delay(100)
+                }
+            }
+            instrumentation.runOnMainSync { audio!!.seek(5000) }
+            withTimeout(10000) { while (audio!!.state.value.positionMs < 5000) delay(100) }
+            android.util.Log.i("RiffunaTest", "PERSISTENT_OFFLINE_CACHE_OK")
         } finally {
             instrumentation.runOnMainSync {
                 audio?.close()

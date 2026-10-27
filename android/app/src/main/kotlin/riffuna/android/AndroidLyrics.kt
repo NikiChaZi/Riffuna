@@ -77,7 +77,7 @@ internal class AndroidLyrics(private val http: OkHttpClient, private val library
                         .newCall(
                             Request.Builder()
                                 .url(url)
-                                .header("User-Agent", "Riffuna/0.3.0-dev01 (personal music player)")
+                                .header("User-Agent", "Riffuna/Android (personal music player)")
                                 .build()
                         )
                         .execute()

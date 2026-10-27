@@ -10,11 +10,11 @@ android {
     compileSdk = 36
     buildToolsVersion = "36.0.0"
     defaultConfig {
-        applicationId = "app.riffuna.android"
+        applicationId = "app.riffuna.player"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.3.0-dev01"
+        versionCode = 30001
+        versionName = "0.3.0-android.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {
@@ -22,6 +22,24 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
+    if (providers.gradleProperty("riffunaTestRelease").orNull == "true") testBuildType = "release"
+    signingConfigs {
+        val keyPath = System.getenv("RIFFUNA_ANDROID_KEYSTORE")
+        if (!keyPath.isNullOrBlank())
+            create("riffuna") {
+                storeFile = file(keyPath)
+                storePassword = System.getenv("RIFFUNA_ANDROID_KEY_PASSWORD")
+                keyAlias = "riffuna"
+                keyPassword = System.getenv("RIFFUNA_ANDROID_KEY_PASSWORD")
+            }
+    }
+    buildTypes {
+        debug { applicationIdSuffix = ".debug" }
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("riffuna")
+        }
+    }
     packaging { resources.excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1") }
     lint { abortOnError = true }
 }

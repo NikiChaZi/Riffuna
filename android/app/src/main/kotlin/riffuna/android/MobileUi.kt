@@ -18,10 +18,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -101,6 +106,9 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
     val state by screen.collectAsStateWithLifecycle(AppState())
     var playlistName by remember { mutableStateOf<String?>(null) }
     var playlistTrack by remember { mutableStateOf<Track?>(null) }
+    var editingPlaylist by remember { mutableStateOf<PlaylistSummary?>(null) }
+    var deletingPlaylist by remember { mutableStateOf<PlaylistSummary?>(null) }
+    var settings by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(state.toast) { if (state.toast.isNotBlank()) snackbar.showSnackbar(state.toast) }
     BackHandler(state.expanded || state.canGoBack) {
@@ -152,6 +160,7 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                 IconButton(onClick = { controller.showView(LibraryView.PLAYLISTS) }) {
                     Icon(Icons.Outlined.LibraryMusic, "Плейлисты")
                 }
+                IconButton(onClick = { settings = true }) { Icon(Icons.Outlined.Tune, "Настройки") }
             }
             when (state.view) {
                 LibraryView.HOME ->
@@ -174,6 +183,37 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                                 OutlinedButton(onClick = importFiles) { Text("Добавить файлы") }
                             }
                         }
+                        if (state.history.isNotEmpty())
+                            item {
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                    items(state.history.take(8), key = { it.id }) { track ->
+                                        Column(
+                                            Modifier.width(156.dp)
+                                                .clip(RoundedCornerShape(22.dp))
+                                                .background(Panel)
+                                                .clickable { controller.play(track) }
+                                                .padding(10.dp)
+                                        ) {
+                                            Cover(track, 136)
+                                            Spacer(Modifier.height(12.dp))
+                                            Text(
+                                                track.title,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                            Text(
+                                                track.artist,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = Color(0xFFAFBAAD),
+                                                fontSize = 12.sp,
+                                            )
+                                            Spacer(Modifier.height(6.dp))
+                                        }
+                                    }
+                                }
+                            }
                         if (state.history.isNotEmpty()) {
                             item {
                                 Text(
@@ -235,11 +275,42 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                     }
                     LazyColumn {
                         items(state.playlists, key = { it.id }) { p ->
+                            var menu by remember { mutableStateOf(false) }
                             ListItem(
                                 headlineContent = { Text(p.name) },
                                 supportingContent = { Text("${p.trackCount} треков") },
                                 leadingContent = { Icon(Icons.Outlined.LibraryMusic, null) },
                                 modifier = Modifier.clickable { controller.openPlaylist(p.id) },
+                                trailingContent = {
+                                    Box {
+                                        IconButton(onClick = { menu = true }) {
+                                            Icon(Icons.Outlined.MoreVert, "Действия с плейлистом")
+                                        }
+                                        DropdownMenu(menu, { menu = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text("Изменить") },
+                                                onClick = {
+                                                    menu = false
+                                                    editingPlaylist = p
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Сделать копию") },
+                                                onClick = {
+                                                    menu = false
+                                                    controller.duplicatePlaylist(p.id)
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Удалить") },
+                                                onClick = {
+                                                    menu = false
+                                                    deletingPlaylist = p
+                                                },
+                                            )
+                                        }
+                                    }
+                                },
                             )
                         }
                     }
@@ -288,6 +359,17 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                             IconButton(onClick = importFiles) {
                                 Icon(Icons.Outlined.Add, "Добавить аудиофайлы")
                             }
+                        if (state.view == LibraryView.PLAYLIST)
+                            IconButton(
+                                onClick = {
+                                    editingPlaylist =
+                                        state.playlists.firstOrNull { it.id == state.playlistId }
+                                }
+                            ) {
+                                Icon(Icons.Outlined.Edit, "Изменить плейлист")
+                            }
+                        if (state.view == LibraryView.QUEUE && state.queue.isNotEmpty())
+                            TextButton(onClick = controller::clearQueue) { Text("Очистить") }
                     }
                     val tracks =
                         if (state.view == LibraryView.QUEUE) state.queue else state.visibleTracks
@@ -307,6 +389,20 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                         }
                     if (state.searchLoading || state.localImporting)
                         LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 12.dp))
+                    if (
+                        (tracks.isNotEmpty() || state.localFilter.isNotBlank()) &&
+                            state.view != LibraryView.QUEUE
+                    ) {
+                        OutlinedTextField(
+                            state.localFilter,
+                            controller::setLocalFilter,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            singleLine = true,
+                            placeholder = { Text("Фильтр списка") },
+                            leadingIcon = { Icon(Icons.Outlined.FilterList, null) },
+                            shape = RoundedCornerShape(16.dp),
+                        )
+                    }
                     if (tracks.isEmpty() && !state.searchLoading)
                         Box(
                             Modifier.weight(1f).fillMaxWidth(),
@@ -345,6 +441,82 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
         }
     }
     if (state.expanded) NowPlaying(controller) { controller.openNowPlaying(false) }
+    editingPlaylist?.let { playlist ->
+        var name by remember(playlist.id) { mutableStateOf(playlist.name) }
+        var description by remember(playlist.id) { mutableStateOf(playlist.description) }
+        AlertDialog(
+            onDismissRequest = { editingPlaylist = null },
+            title = { Text("Твой плейлист") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        name,
+                        { name = it },
+                        label = { Text("Название") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        description,
+                        { description = it },
+                        label = { Text("Описание") },
+                        maxLines = 4,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = name.isNotBlank(),
+                    onClick = {
+                        controller.editPlaylist(playlist.id, name, description)
+                        editingPlaylist = null
+                    },
+                ) {
+                    Text("Сохранить")
+                }
+            },
+            dismissButton = { TextButton(onClick = { editingPlaylist = null }) { Text("Отмена") } },
+        )
+    }
+    deletingPlaylist?.let { playlist ->
+        AlertDialog(
+            onDismissRequest = { deletingPlaylist = null },
+            title = { Text("Удалить «${playlist.name}»?") },
+            text = { Text("Треки останутся в истории и любимом.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        controller.deletePlaylist(playlist.id)
+                        deletingPlaylist = null
+                    }
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = { TextButton(onClick = { deletingPlaylist = null }) { Text("Отмена") } },
+        )
+    }
+    if (settings)
+        AlertDialog(
+            onDismissRequest = { settings = false },
+            title = { Text("Riffuna на твоём устройстве") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(
+                        "Библиотека хранится на телефоне. Полностью загруженные треки доступны из кэша до 512 МБ. Android может освободить этот кэш при нехватке места."
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Уменьшить анимации", Modifier.weight(1f))
+                        Switch(state.reducedMotion, controller::setReducedMotion)
+                    }
+                    Text(
+                        "Для YouTube требуется доступ к сервису через сеть телефона. Синхронизации с библиотекой Windows пока нет.",
+                        color = Color(0xFFAFBAAD),
+                        fontSize = 13.sp,
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { settings = false }) { Text("Готово") } },
+        )
     if (playlistName != null)
         AlertDialog(
             onDismissRequest = { playlistName = null },
@@ -466,6 +638,22 @@ private fun TrackRow(track: Track, state: AppState, c: LocalController, onPlayli
                             menu = false
                         },
                     )
+                if (state.view == LibraryView.QUEUE) {
+                    DropdownMenuItem(
+                        text = { Text("Выше в очереди") },
+                        onClick = {
+                            c.moveInQueue(track.id, -1)
+                            menu = false
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Ниже в очереди") },
+                        onClick = {
+                            c.moveInQueue(track.id, 1)
+                            menu = false
+                        },
+                    )
+                }
                 if (state.view == LibraryView.PLAYLIST)
                     DropdownMenuItem(
                         text = { Text("Убрать из плейлиста") },
@@ -535,12 +723,26 @@ private fun MiniPlayer(c: LocalController) {
 private fun NowPlaying(c: LocalController, close: () -> Unit) {
     val state by c.state.collectAsStateWithLifecycle()
     var showLyrics by remember { mutableStateOf(false) }
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { entered = true }
+    val reveal by
+        animateFloatAsState(
+            if (entered) 1f else 0f,
+            tween(if (state.reducedMotion) 0 else 320),
+            label = "player-reveal",
+        )
     Dialog(
         onDismissRequest = close,
         properties =
             DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
-        Surface(Modifier.fillMaxSize(), color = Graphite) {
+        Surface(
+            Modifier.fillMaxSize().graphicsLayer {
+                alpha = reveal
+                translationY = (1f - reveal) * 40.dp.toPx()
+            },
+            color = Graphite,
+        ) {
             Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 24.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = close) {
@@ -564,6 +766,11 @@ private fun NowPlaying(c: LocalController, close: () -> Unit) {
                     targetState = showLyrics,
                     modifier = Modifier.weight(1f),
                     label = "player-mode",
+                    transitionSpec = {
+                        if (state.reducedMotion)
+                            EnterTransition.None togetherWith ExitTransition.None
+                        else fadeIn(tween(280)) togetherWith fadeOut(tween(180))
+                    },
                 ) { lyrics ->
                     if (lyrics) LyricsView(state, c)
                     else
@@ -695,29 +902,68 @@ private fun LyricsView(state: AppState, c: LocalController) {
             CircularProgressIndicator()
         }
     else if (state.lyrics.isNotEmpty())
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            state = list,
-            contentPadding = PaddingValues(vertical = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(22.dp),
-        ) {
-            itemsIndexed(state.lyrics) { index, line ->
-                val color by
-                    animateColorAsState(
-                        if (index == active) Warm else Color(0xFF6F796D),
-                        label = "lyric-line",
-                    )
+        Column {
+            if (state.lyricsPacket.approximateWords)
                 Text(
-                    line.text,
-                    color = color,
-                    fontSize = if (index == active) 27.sp else 25.sp,
-                    fontWeight = FontWeight.Bold,
-                    lineHeight = 34.sp,
-                    modifier =
-                        Modifier.fillMaxWidth().clickable(enabled = state.seekable) {
-                            c.seek(line.startMs)
-                        },
+                    "Подсветка слов — расчётная",
+                    color = Color(0xFFAFBAAD),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(vertical = 8.dp),
                 )
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                state = list,
+                contentPadding = PaddingValues(vertical = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(22.dp),
+            ) {
+                itemsIndexed(state.lyrics) { index, line ->
+                    val selected = index == active
+                    val focus by
+                        animateFloatAsState(
+                            if (selected) 1f else 0.94f,
+                            tween(if (state.reducedMotion) 0 else 300),
+                            label = "lyric-focus",
+                        )
+                    val end =
+                        line.endMs ?: state.lyrics.getOrNull(index + 1)?.startMs ?: state.durationMs
+                    val words =
+                        if (line.words.isNotEmpty()) line.words
+                        else LyricTiming.estimatedWords(line.text, line.startMs, end)
+                    val text = buildAnnotatedString {
+                        words.forEach { word ->
+                            val progress =
+                                ((state.positionMs - word.startMs).toFloat() /
+                                        (word.endMs - word.startMs).coerceAtLeast(1))
+                                    .coerceIn(0f, 1f)
+                            withStyle(
+                                SpanStyle(
+                                    color =
+                                        if (selected) lerp(Color(0xFF899486), Warm, progress)
+                                        else Color(0xFF6F796D)
+                                )
+                            ) {
+                                append(word.text)
+                            }
+                        }
+                        if (words.isEmpty()) append(line.text)
+                    }
+                    Text(
+                        text,
+                        color = if (selected) Warm else Color(0xFF6F796D),
+                        fontSize = 27.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 34.sp,
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .graphicsLayer {
+                                    scaleX = focus
+                                    scaleY = focus
+                                    transformOrigin =
+                                        androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                                }
+                                .clickable(enabled = state.seekable) { c.seek(line.startMs) },
+                    )
+                }
             }
         }
     else

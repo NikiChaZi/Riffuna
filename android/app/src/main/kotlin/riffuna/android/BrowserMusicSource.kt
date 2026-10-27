@@ -24,6 +24,7 @@ class BrowserMusicSource(
     private val context: Context,
     private val http: OkHttpClient,
     private val library: AndroidLibrary,
+    private val cachedAudio: (Track) -> AudioSource? = { null },
 ) : MusicSource {
     private val ready = CompletableDeferred<Unit>()
     private val requests = ConcurrentHashMap<Int, CompletableDeferred<JsonObject>>()
@@ -262,6 +263,9 @@ class BrowserMusicSource(
                     error("Локальный файл недоступен")
                 }
             )
+        cachedAudio(track)?.let {
+            return it
+        }
         val now = System.currentTimeMillis()
         resolved[track.id]
             ?.takeIf { it.first > now }

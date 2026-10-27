@@ -9,6 +9,7 @@ import androidx.media3.common.*
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.cache.*
 import androidx.media3.exoplayer.ExoPlayer
@@ -27,10 +28,18 @@ import riffuna.core.*
 @androidx.annotation.OptIn(UnstableApi::class)
 class AndroidAudio(
     context: Context,
-    http: OkHttpClient,
+    private val http: OkHttpClient,
     cacheName: String = "audio",
     private val current: () -> Track?,
 ) : AudioEngine {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val cacheScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    private var generation = 0L
+    private var recovery: Job? = null
+    private var recoveries = 0
+    private var caching: Job? = null
+    @Volatile private var cacheWriter: CacheWriter? = null
+    internal var refreshSource: (suspend (Track) -> AudioSource)? = null
     @Volatile private var sourceHeaders = emptyMap<String, String>()
     private val remote = DataSource.Factory { RangeAudioDataSource(http) { sourceHeaders } }
     private val cache =
@@ -79,6 +88,38 @@ class AndroidAudio(
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    val track = current()
+                    val refresh = refreshSource
+                    if (
+                        track != null &&
+                            refresh != null &&
+                            error.errorCode in 2000..2999 &&
+                            recoveries < 2
+                    ) {
+                        val expected = generation
+                        val position = player.currentPosition.coerceAtLeast(0)
+                        val resume = player.playWhenReady
+                        recoveries++
+                        recovery?.cancel()
+                        recovery =
+                            scope.launch {
+                                delay(500L * recoveries)
+                                try {
+                                    val renewed = withContext(Dispatchers.IO) { refresh(track) }
+                                    if (generation != expected) return@launch
+                                    prepare(renewed.copy(autoPlay = resume), position)
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    if (generation == expected) {
+                                        failure =
+                                            "Соединение прервано. Нажми воспроизведение, чтобы повторить"
+                                        publish()
+                                    }
+                                }
+                            }
+                        return
+                    }
                     failure = "Не удалось воспроизвести запись. Проверь подключение и VPN"
                     publish()
                 }
@@ -95,55 +136,111 @@ class AndroidAudio(
                 player.isPlaying,
                 player.playbackState == Player.STATE_ENDED,
                 failure,
-                player.playbackState == Player.STATE_BUFFERING,
+                player.playbackState == Player.STATE_BUFFERING || recovery?.isActive == true,
                 player.isCurrentMediaItemSeekable,
             )
     }
 
     override suspend fun open(source: AudioSource) =
         withContext(Dispatchers.Main) {
-            failure = null
-            sourceHeaders = source.headers.toMap()
-            val track = current()
-            val metadata =
-                MediaMetadata.Builder()
-                    .setTitle(track?.title)
-                    .setArtist(track?.artist)
-                    .apply {
-                        track
-                            ?.thumbnail
-                            ?.takeIf { it.startsWith("https://") }
-                            ?.let { setArtworkUri(android.net.Uri.parse(it)) }
-                    }
-                    .build()
-            player.setMediaItem(
-                MediaItem.Builder()
-                    .setUri(source.uri)
-                    .setMediaId(track?.id ?: source.uri)
-                    .setCustomCacheKey(
-                        if (track != null)
-                            track.id +
-                                ":" +
-                                (android.net.Uri.parse(source.uri).getQueryParameter("itag")
-                                    ?: "local")
-                        else source.uri
-                    )
-                    .setMediaMetadata(metadata)
-                    .build()
-            )
-            player.prepare()
-            player.playWhenReady = source.autoPlay
+            generation++
+            recovery?.cancel()
+            recoveries = 0
+            prepare(source, 0)
         }
+
+    private fun prepare(source: AudioSource, position: Long) {
+        failure = null
+        sourceHeaders = source.headers.toMap()
+        val track = current()
+        val metadata =
+            MediaMetadata.Builder()
+                .setTitle(track?.title)
+                .setArtist(track?.artist)
+                .apply {
+                    track
+                        ?.thumbnail
+                        ?.takeIf { it.startsWith("https://") }
+                        ?.let { setArtworkUri(android.net.Uri.parse(it)) }
+                }
+                .build()
+        player.setMediaItem(
+            MediaItem.Builder()
+                .setUri(source.uri)
+                .setMediaId(track?.id ?: source.uri)
+                .setCustomCacheKey(
+                    if (track != null)
+                        track.id +
+                            ":" +
+                            (android.net.Uri.parse(source.uri).getQueryParameter("itag") ?: "local")
+                    else source.uri
+                )
+                .setMediaMetadata(metadata)
+                .build(),
+            position,
+        )
+        player.prepare()
+        player.playWhenReady = source.autoPlay
+        cacheWriter?.cancel()
+        caching?.cancel()
+        if (source.uri.startsWith("https://") && track != null) {
+            val key =
+                track.id +
+                    ":" +
+                    (android.net.Uri.parse(source.uri).getQueryParameter("itag") ?: "local")
+            caching =
+                cacheScope.launch {
+                    val upstream =
+                        DataSource.Factory { RangeAudioDataSource(http) { source.headers } }
+                    val data =
+                        CacheDataSource.Factory()
+                            .setCache(cache)
+                            .setUpstreamDataSourceFactory(upstream)
+                    val writer =
+                        CacheWriter(
+                            data.createDataSource(),
+                            DataSpec.Builder().setUri(source.uri).setKey(key).build(),
+                            null,
+                            null,
+                        )
+                    cacheWriter = writer
+                    try {
+                        writer.cache()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        /* Playback has its own retry path. */
+                    } finally {
+                        if (cacheWriter === writer) cacheWriter = null
+                    }
+                }
+        }
+    }
+
+    internal fun cached(track: Track): AudioSource? {
+        val key =
+            cache.keys.firstOrNull { key ->
+                if (!key.startsWith(track.id + ":")) false
+                else {
+                    val size = ContentMetadata.getContentLength(cache.getContentMetadata(key))
+                    size > 0 && cache.isCached(key, 0, size)
+                }
+            } ?: return null
+        return AudioSource("riffuna-cache://audio/${track.id}?itag=${key.substringAfterLast(':')}")
+    }
 
     override fun toggle() {
         if (player.playWhenReady) pause() else resume()
     }
 
     override fun pause() {
+        recovery?.cancel()
         player.pause()
     }
 
     override fun resume() {
+        failure = null
+        if (player.playerError != null) player.prepare()
         player.play()
     }
 
@@ -156,6 +253,10 @@ class AndroidAudio(
     }
 
     override fun close() {
+        generation++
+        scope.cancel()
+        cacheWriter?.cancel()
+        cacheScope.cancel()
         handler.removeCallbacks(tick)
         player.release()
         cache.release()
@@ -182,13 +283,17 @@ class AppGraph(
             .followRedirects(false)
             .build()
     val library = AndroidLibrary(context, libraryName)
-    val source = BrowserMusicSource(context, http, library)
     val audio = AndroidAudio(context, http, cacheName) { controller.state.value.current }
+    val source = BrowserMusicSource(context, http, library, audio::cached)
     lateinit var controller: LocalController
         private set
 
     init {
         controller = LocalController(library, source, audio)
+        audio.refreshSource = { track ->
+            source.invalidate(track)
+            source.resolve(track)
+        }
     }
 }
 
