@@ -1,6 +1,14 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
-plugins { kotlin("jvm"); kotlin("plugin.serialization"); id("org.jetbrains.compose"); id("org.jetbrains.kotlin.plugin.compose") }
+
+plugins {
+    kotlin("jvm")
+    kotlin("plugin.serialization")
+    id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
 kotlin { jvmToolchain(21) }
+
 dependencies {
     implementation(project(":shared"))
     implementation(compose.desktop.currentOs)
@@ -17,28 +25,40 @@ dependencies {
     implementation("org.slf4j:slf4j-nop:2.0.17")
     testImplementation(kotlin("test"))
 }
+
 compose.desktop {
     application {
-        mainClass="riffuna.desktop.MainKt"
+        mainClass = "riffuna.desktop.MainKt"
         jvmArgs += listOf("--enable-native-access=ALL-UNNAMED")
         nativeDistributions {
             targetFormats(TargetFormat.Exe)
-            appResourcesRootDir.set(rootProject.layout.projectDirectory.dir("build/desktop-resources"))
-            packageName="Riffuna"
-            packageVersion="0.2.0"
+            appResourcesRootDir.set(
+                rootProject.layout.projectDirectory.dir("build/desktop-resources")
+            )
+            packageName = "Riffuna"
+            packageVersion = "0.2.0"
             modules("java.sql", "java.net.http", "jdk.crypto.ec", "jdk.httpserver")
-            windows { iconFile.set(rootProject.file("assets/riffuna.ico")); menuGroup="Riffuna"; shortcut=true }
+            windows {
+                iconFile.set(rootProject.file("assets/riffuna.ico"))
+                menuGroup = "Riffuna"
+                shortcut = true
+            }
         }
     }
 }
 
-tasks.withType<JavaExec>().configureEach { systemProperty("riffuna.home", rootProject.layout.buildDirectory.dir("desktop-resources/common").get().asFile.absolutePath) }
+tasks.withType<JavaExec>().configureEach {
+    systemProperty(
+        "riffuna.home",
+        rootProject.layout.buildDirectory.dir("desktop-resources/common").get().asFile.absolutePath,
+    )
+}
 
 tasks.register<JavaExec>("renderUi") {
     dependsOn("testClasses")
-    classpath=sourceSets.test.get().runtimeClasspath
+    classpath = sourceSets.test.get().runtimeClasspath
     mainClass.set("riffuna.desktop.RenderUiKt")
-    systemProperty("riffuna.project",rootProject.projectDir.absolutePath)
-    systemProperty("java.awt.headless","true")
-    environment("MUSICDESK_DATA_DIR",rootProject.file(".test-data/full-ui-smoke").absolutePath)
+    systemProperty("riffuna.project", rootProject.projectDir.absolutePath)
+    systemProperty("java.awt.headless", "true")
+    environment("MUSICDESK_DATA_DIR", rootProject.file(".test-data/full-ui-smoke").absolutePath)
 }
