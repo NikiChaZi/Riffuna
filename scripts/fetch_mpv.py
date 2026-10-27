@@ -18,28 +18,76 @@ SIZE = 56826947
 SOURCE_COMMIT = "baa3e11d42"
 
 
+DLL_SHA256 = "bbb8bb09e4ffc93cd93430b620f40b09e086b7dc63f1651c8a1ce38853ed5169"
+MIRROR_ASSET = "Riffuna-0.2.0-windows-x64.zip"
+MIRROR_URL = "https://github.com/NikiChaZi/Riffuna/releases/download/v0.2.0/" + MIRROR_ASSET
+MIRROR_SHA256 = "cfd717933edba4a4789238503382d74c3ce78f64b3f23fcad3d11b4986a908b9"
+MIRROR_SIZE = 307986741
+MIRROR_PREFIX = "Riffuna.runtime/app/resources/vendor/libmpv/"
+
+
+def file_hash(path):
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def download_pinned(url, destination, size, checksum):
+    if destination.is_file() and destination.stat().st_size == size and file_hash(destination) == checksum:
+        return
+    temporary = destination.with_name(destination.name + ".part")
+    try:
+        digest = hashlib.sha256()
+        length = 0
+        with requests.get(url, stream=True, timeout=(15, 90)) as response:
+            response.raise_for_status()
+            with temporary.open("wb") as target:
+                for chunk in response.iter_content(1024 * 1024):
+                    if not chunk:
+                        continue
+                    length += len(chunk)
+                    if length > size:
+                        raise RuntimeError("Pinned download exceeded expected size")
+                    digest.update(chunk)
+                    target.write(chunk)
+        if length != size or digest.hexdigest() != checksum:
+            raise RuntimeError("Pinned download failed its size/SHA256 check")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def fetch_mirror(directory):
+    archive = directory / MIRROR_ASSET
+    download_pinned(MIRROR_URL, archive, MIRROR_SIZE, MIRROR_SHA256)
+    with zipfile.ZipFile(archive) as package:
+        binary = package.read(MIRROR_PREFIX + "libmpv-2.dll")
+        if hashlib.sha256(binary).hexdigest() != DLL_SHA256:
+            raise RuntimeError("Mirror libmpv DLL differs from the pinned LGPL build")
+        license_text = package.read(MIRROR_PREFIX + "LICENSE.LGPL")
+        metadata = json.loads(package.read(MIRROR_PREFIX + "BUILD-MANIFEST.json"))
+    metadata["download_mirror"] = {"url": MIRROR_URL, "sha256": MIRROR_SHA256, "size": MIRROR_SIZE}
+    metadata["dll_sha256"] = DLL_SHA256
+    temporary = directory / "libmpv-2.dll.part"
+    try:
+        temporary.write_bytes(binary)
+        temporary.replace(directory / "libmpv-2.dll")
+    finally:
+        temporary.unlink(missing_ok=True)
+    (directory / "LICENSE.LGPL").write_bytes(license_text)
+    (directory / "BUILD-MANIFEST.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf8")
+    return directory / "libmpv-2.dll"
+
+
 def fetch(directory):
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     archive = directory / ASSET
-    temporary = directory / (ASSET + ".part")
-    if not archive.exists() or hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
-        digest = hashlib.sha256()
-        length = 0
-        try:
-            with requests.get(URL, stream=True, timeout=(15, 90)) as response:
-                response.raise_for_status()
-                with temporary.open("wb") as handle:
-                    for chunk in response.iter_content(1024 * 1024):
-                        if chunk:
-                            handle.write(chunk)
-                            digest.update(chunk)
-                            length += len(chunk)
-            if length != SIZE or digest.hexdigest() != SHA256:
-                raise RuntimeError("Official libmpv archive failed its pinned size/SHA256 check")
-            temporary.replace(archive)
-        finally:
-            temporary.unlink(missing_ok=True)
+    try:
+        download_pinned(URL, archive, SIZE, SHA256)
+    except requests.HTTPError as error:
+        if error.response is None or error.response.status_code not in (404, 410):
+            raise
+        return fetch_mirror(directory)
     with zipfile.ZipFile(archive) as package:
         for member in package.infolist():
             destination = (directory / member.filename).resolve()
