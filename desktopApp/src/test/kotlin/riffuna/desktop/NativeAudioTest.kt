@@ -31,7 +31,7 @@ class NativeAudioTest {
             .putInt(payload.size)
         val file = Files.createTempFile("riffuna-native-test", ".wav")
         Files.write(file, header.array() + payload)
-        val audio = MpvAudio(dll)
+        val audio = MpvAudio(dll, audioDriver = if (System.getenv("CI") == "true") "null" else null)
         try {
             assertTrue(audio.devices().any { it.id == "auto" })
             audio.selectDevice("auto")

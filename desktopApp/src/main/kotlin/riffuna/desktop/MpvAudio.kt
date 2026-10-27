@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.*
 import riffuna.core.*
 
-class MpvAudio(path: Path) : AudioEngine {
+class MpvAudio(path: Path, private val audioDriver: String? = null) : AudioEngine {
     @Structure.FieldOrder("eventId", "error", "reply", "data")
     class Event(pointer: Pointer) : Structure(pointer) {
         @JvmField var eventId = 0
@@ -78,13 +78,18 @@ class MpvAudio(path: Path) : AudioEngine {
                 "audio-samplerate" to "48000",
                 "audio-format" to "float",
                 "audio-channels" to "stereo",
-                "audio-stream-silence" to "yes",
+                "audio-stream-silence" to if (audioDriver == "null") "no" else "yes",
             )
             .forEach { (key, value) ->
                 check(api.mpv_set_option_string(handle, key, value) >= 0) {
                     "Unsupported audio option: $key"
                 }
             }
+        if (audioDriver != null) {
+            check(api.mpv_set_option_string(handle, "ao", audioDriver) >= 0)
+            if (audioDriver == "null")
+                check(api.mpv_set_option_string(handle, "ao-null-buffer", "0.05") >= 0)
+        }
         check(api.mpv_initialize(handle) >= 0) { "Could not initialize libmpv" }
         api.mpv_observe_property(handle, 42L, "audio-device-list", 0)
         scope.launch {
@@ -231,11 +236,9 @@ class MpvAudio(path: Path) : AudioEngine {
     override fun selectDevice(id: String) {
         require(devices().any { it.id == id })
         property("audio-device", id)
-        val description = devices().firstOrNull { it.id == id }?.name.orEmpty()
-        property(
-            "audio-stream-silence",
-            if (id == "auto" || description.contains("buds3 fe", true)) "yes" else "no",
-        )
+        // Keep the output stream open consistently for physical devices, including Bluetooth.
+        // The null driver used by CI has no hardware stream to preserve.
+        property("audio-stream-silence", if (audioDriver == "null") "no" else "yes")
     }
 
     @Synchronized

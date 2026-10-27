@@ -1,0 +1,57 @@
+name: Checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  kotlin:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      RIFFUNA_LIVE_TEST: '0'
+      RIFFUNA_CATALOGUE_TEST: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Prepare native test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install requests
+          python scripts/fetch_mpv.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native dependency download failed' }
+          New-Item -ItemType Directory -Force build/desktop-resources/common/vendor/node | Out-Null
+          Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination build/desktop-resources/common/vendor/node/node.exe
+      - name: Format and offline Kotlin tests
+        run: ./gradlew.bat spotlessCheck :shared:jvmTest :desktopApp:test --no-daemon --console=plain
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kotlin-test-results
+          path: |
+            shared/build/test-results/
+            desktopApp/build/test-results/
+  ml-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - run: uv sync --frozen --extra dev
+      - run: uv run --frozen --extra dev pytest

@@ -10,7 +10,7 @@ Node.js v24.15.0 is included for the YouTube source component. Its complete upst
 
 YouTube.js 18.3.0, Undici 8.12.3 and their locked npm dependencies are included under `source-runtime/node_modules` with their upstream notices. YouTube.js and Undici use the MIT license. Undici source: https://github.com/nodejs/undici . YouTube.js source: https://github.com/LuanRT/YouTube.js . The application's own JSON-lines wrapper is maintained in `source-runtime/index.mjs`.
 
-Python, PySide6, Qt, Shiboken, yt-dlp and PyInstaller are not included in the Kotlin desktop runtime. Previous Python/Qt sources remain in this repository for development history. Their third-party permissions and previously distributed notices remain applicable to those historical packages.
+Python, PySide6, Qt, Shiboken, yt-dlp and PyInstaller are not included in the Kotlin desktop runtime. Previous Python/Qt sources remain in the v0.2.0 tag and legacy-qt branch for development history. Their third-party permissions and previously distributed notices remain applicable to those historical packages.
 
 Music, artwork and lyrics fetched during use are not distributed as part of the application package. The local recommendation model uses Music4All-Onion numerical features and derived vectors. Dataset attribution, source DOI, CC-BY-4.0 license link, metadata provenance and transformations are included in `LICENSES/Music4All-Onion-ATTRIBUTION.json` and `music-model/ATTRIBUTION.json`. Third-party data and component rights remain separate from Riffuna's own code license. Original interaction records, music and lyrics are not bundled.
 

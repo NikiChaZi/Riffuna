@@ -35,22 +35,14 @@ Retrieval Recall@100: 0.09435. Это офлайн-метрики выбранн
 
 Windows-приложение выполняет user tower и CatBoost через ONNX Runtime, без Python и удалённого API. Экспорт: `scripts/export_music_onnx.py`; сборка: `scripts/build_kotlin.ps1`. Проверены числовые оценки и порядок рекомендаций относительно исходной модели. Атрибуция обучающих признаков включена в `LICENSES/Music4All-Onion-ATTRIBUTION.json`. Ниже сохранены сведения о прежней Qt-реализации и инструментах обучения.
 
-## Историческая Qt-реализация и обучение
-
-В обычном EXE выполняются NumPy-экспорт user tower и числовой JSON-экспорт симметричных деревьев CatBoost. Эти вычисления сверены с исходными библиотеками: максимальная ошибка user tower < 1e-7, на 1 000 тестовых числовых входах ranker — 0.0. PyTorch и CatBoost в EXE не требуются. Загрузка модели и подбор выполняются в worker, аудиодвижок не заменяется.
-
-Если работает локальный API на 127.0.0.1:8766, клиент использует его. При недоступности API выполняет ту же модель локально. API принимает только музыкальный контракт domain=music/schema=1. Сервис связывается только с loopback; внешнее размещение требует отдельной авторизации.
-
-Опциональные RIFFUNA_QDRANT_URL и RIFFUNA_REDIS_URL подключают существующую инфраструктуру. Музыкальная Qdrant-коллекция и Redis-ключи имеют отдельный префикс и fingerprint весов, не затрагивая movies. По умолчанию поиск точный NumPy по 49 668 векторам; наличие Qdrant/Redis в этой среде не подтверждено (порты были закрыты), интеграция с ними в этом запуске не проверялась. При повреждённом/неверном контракте сервер не заменяется скрыто локальным режимом.
-
-Разработка/переобучение:
+## Обучение и экспорт
 
 ```powershell
 uv sync --extra dev --extra recsys
 .venv\Scripts\python.exe scripts/download_music_training.py
 .venv\Scripts\python.exe -m riffuna_recsys.train --epochs 5
-.venv\Scripts\python.exe -m riffuna_recsys.service --model-dir .test-data/music-training/model
-.\build.ps1
+.venv\Scripts\python.exe scripts/export_music_onnx.py --source .test-data/music-training/model --target build/kotlin-music-model
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_kotlin.ps1
 ```
 
-Для обычной сборки достаточно desktop/dev-зависимостей и уже обученных файлов .test-data/music-training/model. scripts/prepare_music_model.py переносит в build/music-model только явный список весов/каталога и атрибуцию; личные лайки, история, аудио, LRC и кэш метаданных не упаковываются. Артефакты и исходные данные исключены из Git. Код обучения остаётся в riffuna_recsys, чтобы воспроизводить и совершенствовать модель.
+Обучающие данные, веса и пользовательская библиотека исключены из Git. Числовой ONNX-экспорт содержит атрибуцию; личные лайки, история, аудио и тексты в пакет не копируются. Прежняя Qt-интеграция и её скрипты сборки сохранены в теге `v0.2.0` и ветке `legacy-qt`.

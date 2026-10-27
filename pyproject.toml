@@ -4,28 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "riffuna"
-version = "0.2.0.dev5"
-description = "Personal Windows music player"
+version = "0.2.0"
+description = "Training, evaluation and ONNX export tools for Riffuna"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE", "LICENSING.md", "LICENSES/*"]
 requires-python = ">=3.12"
 dependencies = [
   "numpy>=1.26,<3",
-  "PySide6==6.10.2",
-  "yt-dlp[default]>=2026.10.21",
-  "ytmusicapi>=1.12.3,<2",
   "requests>=2.32,<3",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pyinstaller>=6.16"]
-recsys = ["torch>=2.5,<3", "catboost>=1.2,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "redis>=5,<7", "qdrant-client>=1.13,<2"]
-
-[project.gui-scripts]
-musicdesk = "musicdesk.__main__:main"
+dev = ["pytest>=8"]
+recsys = ["torch>=2.5,<3", "catboost>=1.2,<2", "onnx>=1.17,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "redis>=5,<7", "qdrant-client>=1.13,<2"]
 
 [tool.setuptools.packages.find]
-include = ["musicdesk*", "riffuna_recsys*"]
+include = ["riffuna_recsys*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
