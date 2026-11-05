@@ -17,12 +17,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.*
-import java.net.URI
-import java.nio.file.*
 import java.nio.file.Path as FilePath
 import java.util.concurrent.Semaphore
 import kotlinx.coroutines.*
 import org.jetbrains.skia.Image as SkiaImage
+import riffuna.core.ArtworkRequests
 import riffuna.desktop.ArtworkStore
 
 private object ArtworkCache {
@@ -77,31 +76,27 @@ fun Artwork(
     radius: Dp = 10.dp,
 ) {
     BoxWithConstraints(modifier.clip(RoundedCornerShape(radius)).background(RiffunaColors.Raised)) {
-        val pixels = if (maxWidth > 240.dp) 720 else if (maxWidth > 100.dp) 512 else 128
-        val quality =
-            remember(url, pixels) {
-                runCatching {
-                        val host = URI(url).host.orEmpty()
-                        when {
-                            host.endsWith("googleusercontent.com") || host.endsWith("ggpht.com") ->
-                                Regex("w\\d+-h\\d+").replace(url, "w$pixels-h$pixels")
-                            host.endsWith("ytimg.com") && pixels > 128 ->
-                                Regex("/(?:default|mqdefault|sddefault)\\.jpg")
-                                    .replace(url, "/hqdefault.jpg")
-                            else -> url
-                        }
-                    }
-                    .getOrDefault(url)
-            }
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val pixels = with(density) { maxWidth.toPx().toInt().coerceAtLeast(128) }
+        val candidates = remember(url, pixels) { ArtworkRequests.candidates(url, pixels) }
         val image by
-            produceState<ImageBitmap?>(null, quality) {
-                value =
-                    ArtworkCache.load(quality)
-                        ?: if (quality != url) ArtworkCache.load(url) else null
+            produceState<ImageBitmap?>(null, candidates) {
+                value = null
+                for (candidate in candidates) {
+                    val loaded = ArtworkCache.load(candidate) ?: continue
+                    value = loaded
+                    break
+                }
             }
         val actual = image
         if (actual != null)
-            Image(actual, description, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            Image(
+                actual,
+                description,
+                Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
+            )
         else
             Canvas(Modifier.fillMaxSize().padding(16.dp)) {
                 val r = size.minDimension * .42f
@@ -177,29 +172,33 @@ fun ProgressSlider(
                     }
                     .pointerInput(enabled) {
                         if (enabled)
-                            detectTapGestures { position ->
-                                val next = (position.x / width).coerceIn(0f, 1f)
-                                currentChange(next)
-                                currentCommit?.invoke(next)
-                            }
-                    }
-                    .pointerInput(enabled) {
-                        if (enabled)
-                            detectDragGestures(
-                                onDragStart = { update(it.x) },
-                                onDragEnd = {
-                                    draft?.let {
-                                        currentChange(it)
-                                        currentCommit?.invoke(it)
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
+                                update(down.position.x)
+                                var released = false
+                                try {
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val change =
+                                            event.changes.firstOrNull { it.id == down.id } ?: break
+                                        if (change.isConsumed) break
+                                        update(change.position.x)
+                                        change.consume()
+                                        if (!change.pressed) {
+                                            released = true
+                                            break
+                                        }
                                     }
+                                    if (released)
+                                        draft?.let { next ->
+                                            // One release commits a click or drag exactly once.
+                                            if (currentCommit != null) currentCommit?.invoke(next)
+                                        }
+                                } finally {
                                     draft = null
-                                },
-                                onDragCancel = { draft = null },
-                                onDrag = { change, _ ->
-                                    change.consume()
-                                    update(change.position.x)
-                                },
-                            )
+                                }
+                            }
                     }
             ) {
                 Canvas(Modifier.fillMaxSize()) {

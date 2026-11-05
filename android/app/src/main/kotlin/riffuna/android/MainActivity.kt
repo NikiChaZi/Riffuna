@@ -36,7 +36,6 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
-        startService(Intent(this, PlaybackService::class.java))
         if (
             android.os.Build.VERSION.SDK_INT >= 33 &&
                 !getPreferences(MODE_PRIVATE).getBoolean("notification_requested", false)
@@ -47,5 +46,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             RiffunaTheme { MobileApp(graph.controller) { documents.launch(arrayOf("audio/*")) } }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        startService(Intent(this, PlaybackService::class.java))
     }
 }

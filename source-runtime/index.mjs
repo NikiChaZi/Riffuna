@@ -80,7 +80,10 @@ async function ensurePlayer(api){
 }
 const yt=async()=>session??=createSession();
 const searches=new Map();const metadata=new Map();const catalogIds=new Set();
-function thumb(values){return [...(values||[])].sort((a,b)=>Math.abs((a.width||120)-360)-Math.abs((b.width||120)-360))[0]?.url||'';}
+function thumb(values){
+ const area=value=>(Number(value.width)||0)*(Number(value.height)||Number(value.width)||0);
+ return [...(values||[])].filter(value=>value?.url).sort((a,b)=>area(b)-area(a))[0]?.url||'';
+}
 function musicRow(row){
  if(row.item_type==='song'&&row.id){catalogIds.add(row.id);while(catalogIds.size>2000)catalogIds.delete(catalogIds.values().next().value);}
  if(!row.id||!row.title)return null;

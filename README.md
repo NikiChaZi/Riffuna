@@ -1,4 +1,4 @@
-# Riffuna 0.2.1
+# Riffuna 0.3.0
 
 Локальный музыкальный плеер для Windows на Kotlin и Compose Multiplatform. Источники музыки — YouTube и локальные аудиофайлы; библиотека, аудиокэш и музыкальные рекомендации работают на устройстве. Удалённый сервер для обычного использования не нужен.
 
@@ -8,7 +8,7 @@
 
 Лайки, история, плейлисты, очередь, настройки, выбранные записи и кэш находятся в **`%USERPROFILE%\.riffuna`**. Запуск из другой папки не создаёт другую библиотеку. Один экземпляр приложения работает с одной библиотекой; путь и блокировка совместимы с предыдущей версией.
 
-Актуальный выпуск — **[Riffuna 0.2.1](https://github.com/NikiChaZi/Riffuna/releases/tag/v0.2.1)**. Скачай `Riffuna-0.2.1-windows-x64.zip`, распакуй целиком в отдельную папку и открой `Riffuna.exe`. Папка `Riffuna.runtime` должна оставаться рядом. При переходе с Qt прежняя библиотека подхватывается автоматически; удалять `%USERPROFILE%\.riffuna` не нужно.
+Актуальный выпуск — [Riffuna 0.3.0](https://github.com/NikiChaZi/Riffuna/releases/tag/v0.3.0). Скачай [установщик Windows x64](https://github.com/NikiChaZi/Riffuna/releases/download/v0.3.0/Riffuna-0.3.0-windows-x64.exe) и запусти его. При обновлении используется существующая библиотека в `%USERPROFILE%\.riffuna`.
 
 ## Возможности
 
@@ -38,15 +38,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_kotlin.ps1 -Li
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_kotlin.ps1
 ```
 
-Сборка появляется в `dist/Riffuna-0.2.1`. Скрипт установки сохраняет прежний EXE в `.test-data/before-native-kotlin` и не переносит пользовательскую базу данных.
+Сборка появляется в `dist/Riffuna-0.3.0`. Скрипт установки сохраняет прежний EXE в `.test-data/before-native-kotlin` и не переносит пользовательскую базу данных.
 
 [Архитектура, проверки и границы переноса](docs/kotlin-migration.md). [Обучение музыкальных моделей](docs/music-recsys.md).
 
 ## Android
 
-Начат Android MVP: портретный Compose UI, общее Kotlin-ядро, Media3, локальная SQLite, поиск, очередь, лайки, история, плейлисты и импорт файлов. Проверочная APK-сборка прошла тесты в BlueStacks; это ещё не стабильный Android-релиз. «Резонанс» и расширенный поиск альтернатив пока остаются в Windows. [Сборка, проверки и ограничения Android](docs/android-mvp.md).
+Android-версия включает портретный Compose-интерфейс, поиск, очередь, лайки, историю, плейлисты и импорт файлов. Воспроизведением можно управлять из системной панели, включая Samsung Now Bar. «Резонанс» и расширенный поиск альтернатив пока остаются в Windows. [Сборка, проверки и ограничения Android](docs/android-mvp.md).
 
-[Скачать APK Android](https://github.com/NikiChaZi/Riffuna/releases/download/v0.3.0-android.2/Riffuna-android.apk) · [Описание предварительного выпуска](https://github.com/NikiChaZi/Riffuna/releases/tag/v0.3.0-android.2). Android 8.0 и новее. Установи APK как обычное приложение; отдельные Python, Node.js, Java и сервер не нужны. Для YouTube требуется доступ через сеть телефона.
+[Скачать APK Android](https://github.com/NikiChaZi/Riffuna/releases/download/v0.3.0/Riffuna-0.3.0-android.apk). Требуется Android 8.0 или новее. Обновление можно установить поверх предыдущего подписанного выпуска с сохранением библиотеки. Для YouTube требуется доступ через сеть телефона.
 
 ## Лицензия
 

@@ -5,6 +5,7 @@ import java.nio.file.*
 import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
 import javax.imageio.ImageIO
+import riffuna.core.ArtworkRequests
 
 /** Validates before persistence; a damaged cached cover is downloaded again. */
 internal class ArtworkStore(
@@ -27,7 +28,7 @@ internal class ArtworkStore(
                 val cached =
                     runCatching {
                             require(Files.size(file) <= 4 * 1024 * 1024)
-                            Files.readAllBytes(file).also(::validate)
+                            Files.readAllBytes(file).also { validate(it, url) }
                         }
                         .getOrNull()
                 if (cached != null) {
@@ -41,7 +42,7 @@ internal class ArtworkStore(
                 }
                 Files.deleteIfExists(file)
             }
-            val bytes = fetch(url).also(::validate)
+            val bytes = fetch(url).also { validate(it, url) }
             Files.createDirectories(directory)
             val temporary = Files.createTempFile(directory, "cover-", ".tmp")
             try {
@@ -63,7 +64,7 @@ internal class ArtworkStore(
             bytes
         }
 
-    private fun validate(bytes: ByteArray) {
+    private fun validate(bytes: ByteArray, url: String) {
         require(bytes.isNotEmpty() && bytes.size <= 4 * 1024 * 1024)
         ImageIO.createImageInputStream(bytes.inputStream()).use { input ->
             require(input != null)
@@ -75,6 +76,7 @@ internal class ArtworkStore(
                 val width = reader.getWidth(0)
                 val height = reader.getHeight(0)
                 require(width > 0 && height > 0 && width.toLong() * height <= 4_000_000)
+                require(!ArtworkRequests.isPlaceholder(url, width, height))
                 require(reader.read(0) != null)
             } finally {
                 reader.dispose()

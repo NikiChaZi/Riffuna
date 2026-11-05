@@ -28,22 +28,23 @@ class BrowserMusicSource(
     private val library: AndroidLibrary,
     private val cachedAudio: (Track) -> AudioSource? = { null },
 ) : MusicSource {
-    private val ready = CompletableDeferred<Unit>()
+    private class RendererGone : IllegalStateException("WebView renderer stopped")
+
     private val requests = ConcurrentHashMap<Int, CompletableDeferred<JsonObject>>()
     private val ids = AtomicInteger()
     private val network = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val networkSlots = Semaphore(4)
-    private val networkJobs = ConcurrentHashMap<Int, Job>()
-    private val networkCalls = ConcurrentHashMap<Int, Call>()
     @Volatile private var closed = false
-    private val web = WebView(context)
+    private var bridge: Bridge? = null
     private val loader =
         WebViewAssetLoader.Builder()
             .setDomain("www.youtube.com")
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
             .build()
 
-    init {
+    private fun createBridge(): Bridge {
+        val web = WebView(context)
+        val renderer = Bridge(web)
         web.settings.javaScriptEnabled = true
         web.settings.userAgentString =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36(KHTML, like Gecko)"
@@ -51,15 +52,15 @@ class BrowserMusicSource(
         web.settings.allowContentAccess = false
         web.settings.domStorageEnabled = false
         web.settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-        web.addJavascriptInterface(Bridge(), "Native")
+        web.addJavascriptInterface(renderer, "Native")
         web.webChromeClient =
             object : WebChromeClient() {
                 override fun onConsoleMessage(message: ConsoleMessage): Boolean {
                     if (
                         message.messageLevel() == ConsoleMessage.MessageLevel.ERROR &&
-                            !ready.isCompleted
+                            !renderer.ready.isCompleted
                     )
-                        ready.completeExceptionally(
+                        renderer.ready.completeExceptionally(
                             IllegalStateException("Не удалось запустить встроенный JS-движок")
                         )
                     return true
@@ -88,17 +89,48 @@ class BrowserMusicSource(
                     view: WebView,
                     detail: RenderProcessGoneDetail,
                 ): Boolean {
-                    val error =
-                        IllegalStateException("JS-движок остановлен. Перезапусти приложение")
-                    ready.completeExceptionally(error)
-                    requests.values.forEach { it.completeExceptionally(error) }
+                    if (bridge === renderer) {
+                        bridge = null
+                        val error = RendererGone()
+                        renderer.ready.completeExceptionally(error)
+                        requests.values.forEach { it.completeExceptionally(error) }
+                    }
+                    renderer.dispose()
                     return true
                 }
             }
         web.loadUrl("https://www.youtube.com/assets/source/index.html")
+        return renderer
     }
 
-    inner class Bridge {
+    private inner class Bridge(val web: WebView) {
+        val ready = CompletableDeferred<Unit>()
+        @Volatile
+        var disposed = false
+            private set
+
+        private val networkJobs = ConcurrentHashMap<Int, Job>()
+        private val networkCalls = ConcurrentHashMap<Int, Call>()
+
+        fun dispose() {
+            if (disposed) return
+            disposed = true
+            ready.cancel()
+            networkJobs.values.forEach { it.cancel() }
+            networkCalls.values.forEach { it.cancel() }
+            web.removeJavascriptInterface("Native")
+            web.destroy()
+        }
+
+        private suspend fun deliverHttp(id: Int, result: String) =
+            withContext(Dispatchers.Main) {
+                if (!closed && !disposed)
+                    web.evaluateJavascript(
+                        "globalThis.riffunaHttpResponse($id,${JsonPrimitive(result)})",
+                        null,
+                    )
+            }
+
         @JavascriptInterface
         fun issue(action: String, type: String) {
             android.util.Log.w(
@@ -123,7 +155,7 @@ class BrowserMusicSource(
 
         @JavascriptInterface
         fun http(id: Int, payload: String) {
-            if (closed || id <= 0) return
+            if (closed || disposed || id <= 0) return
             if (payload.length > 262144 || networkJobs.size >= 32) {
                 network.launch { deliverHttp(id, "{\"error\":true}") }
                 return
@@ -182,7 +214,7 @@ class BrowserMusicSource(
                         http,
                         builder.build(),
                         onCall = { networkCalls[id] = it },
-                        cancelled = { networkJobs[id]?.isActive != true },
+                        cancelled = { disposed || networkJobs[id]?.isActive != true },
                     )
                     .use { response ->
                         android.util.Log.i(
@@ -236,26 +268,27 @@ class BrowserMusicSource(
             }
     }
 
-    private suspend fun deliverHttp(id: Int, result: String) =
-        withContext(Dispatchers.Main) {
-            if (!closed)
-                web.evaluateJavascript(
-                    "globalThis.riffunaHttpResponse($id,${JsonPrimitive(result)})",
-                    null,
-                )
-        }
-
     private suspend fun request(action: String, values: Map<String, JsonElement>): JsonObject =
-        withTimeout(120000) {
-            ready.await()
+        withTimeoutOrNull(120000) {
+            try {
+                requestOnce(action, values)
+            } catch (_: RendererGone) {
+                requestOnce(action, values)
+            }
+        } ?: error("Источник не ответил вовремя")
+
+    private suspend fun requestOnce(action: String, values: Map<String, JsonElement>): JsonObject =
+        withContext(Dispatchers.Main) {
+            check(!closed)
+            val renderer = bridge ?: createBridge().also { bridge = it }
+            renderer.ready.await()
+            if (renderer.disposed) throw RendererGone()
             val id = ids.incrementAndGet()
             val result = CompletableDeferred<JsonObject>()
             requests[id] = result
             try {
                 val payload = JsonObject(values + ("action" to JsonPrimitive(action)))
-                withContext(Dispatchers.Main) {
-                    web.evaluateJavascript("globalThis.riffunaRequest($id,$payload)", null)
-                }
+                renderer.web.evaluateJavascript("globalThis.riffunaRequest($id,$payload)", null)
                 val response = result.await()
                 check(response["ok"]?.jsonPrimitive?.booleanOrNull == true) {
                     "Источник временно недоступен. Проверь VPN и повтори попытку"
@@ -416,11 +449,10 @@ class BrowserMusicSource(
 
     override fun close() {
         closed = true
-        networkCalls.values.forEach { it.cancel() }
         network.cancel()
         requests.values.forEach { it.cancel() }
         requests.clear()
-        web.removeJavascriptInterface("Native")
-        web.destroy()
+        bridge?.dispose()
+        bridge = null
     }
 }

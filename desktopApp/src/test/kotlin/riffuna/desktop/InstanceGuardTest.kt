@@ -7,11 +7,37 @@ class InstanceGuardTest {
     @Test
     fun duplicateInstanceIsRefusedAndLockIsReleased() {
         val data = Files.createTempDirectory("riffuna-instance-test")
-        val first = InstanceGuard.acquire(data)
-        assertNotNull(first)
-        assertNull(InstanceGuard.acquire(data))
-        first.close()
-        assertFalse(Files.exists(data.resolve("instance.lock")))
-        InstanceGuard.acquire(data)!!.close()
+        val first = assertNotNull(InstanceGuard.acquire(data))
+        try {
+            assertNull(InstanceGuard.acquire(data))
+        } finally {
+            first.close()
+        }
+        // Reuse the same file to avoid unlink races between exiting and starting instances.
+        assertTrue(Files.exists(data.resolve("instance.lock")))
+        assertNotNull(InstanceGuard.acquire(data)).close()
+    }
+
+    @Test
+    fun staleLockWithReusedLivePidDoesNotBlockStartup() {
+        val data = Files.createTempDirectory("riffuna-reused-pid-test")
+        Files.writeString(
+            data.resolve("instance.lock"),
+            "${ProcessHandle.current().pid()}\nRiffuna\nold-host\n",
+        )
+        assertNotNull(InstanceGuard.acquire(data)).use { assertNull(InstanceGuard.acquire(data)) }
+    }
+
+    @Test
+    fun emptyOrMalformedStaleLockDoesNotBlockStartup() {
+        for (contents in listOf("", "not-a-pid\nRiffuna\n")) {
+            val data = Files.createTempDirectory("riffuna-stale-lock-test")
+            Files.writeString(data.resolve("instance.lock"), contents)
+            assertNotNull(InstanceGuard.acquire(data)).close()
+            assertEquals(
+                ProcessHandle.current().pid().toString(),
+                Files.readAllLines(data.resolve("instance.lock")).first(),
+            )
+        }
     }
 }

@@ -42,6 +42,16 @@ class ArtworkStoreTest {
     }
 
     @Test
+    fun highResolutionPlaceholderIsNotCached() {
+        val directory = Files.createTempDirectory("riffuna-cover-placeholder")
+        val store = ArtworkStore(directory, fetch = { image() })
+        assertFailsWith<IllegalArgumentException> {
+            store.load("https://i.ytimg.com/vi/aaaaaaaaaaa/maxresdefault.jpg")
+        }
+        assertEquals(0L, Files.list(directory).use { it.count() })
+    }
+
+    @Test
     fun oldArtworkIsEvictedWithinBudget() {
         val directory = Files.createTempDirectory("riffuna-covers-budget")
         val bytes = image()

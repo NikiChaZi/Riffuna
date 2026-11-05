@@ -173,10 +173,16 @@ class AndroidSmokeTest {
             audio = AndroidAudio(context, client, "test-recovery-${UUID.randomUUID()}") { track }
             audio.setVolume(0f)
             audio.refreshSource = {
-                renewals.incrementAndGet()
+                if (renewals.incrementAndGet() == 1) throw java.io.IOException("Temporary offline")
                 AudioSource("https://audio.googlevideo.com/videoplayback?itag=140&v=fresh")
             }
         }
+        val activity =
+            instrumentation.startActivitySync(
+                android.content
+                    .Intent(context, MainActivity::class.java)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
         try {
             audio.open(
                 AudioSource("https://audio.googlevideo.com/videoplayback?itag=140&v=expired")
@@ -187,9 +193,14 @@ class AndroidSmokeTest {
                     delay(50)
                 }
             }
-            assertEquals(1, renewals.get())
+            assertEquals(2, renewals.get())
         } finally {
-            instrumentation.runOnMainSync { audio.close() }
+            instrumentation.runOnMainSync {
+                audio.close()
+                activity.finish()
+                context.stopService(android.content.Intent(context, PlaybackService::class.java))
+            }
+            instrumentation.waitForIdleSync()
         }
     }
 
@@ -213,20 +224,89 @@ class AndroidSmokeTest {
         var media: androidx.media3.session.MediaController? = null
         try {
             val track = graph.source.search("Дора Понарошку", 1).first()
-            instrumentation.runOnMainSync { graph.controller.play(track) }
-            instrumentation.runOnMainSync { activity.moveTaskToBack(true) }
+            val nextTrack = graph.source.search("Lady Gaga Just Dance", 1).first()
+            instrumentation.runOnMainSync {
+                graph.controller.enqueueMany(listOf(track, nextTrack))
+                graph.controller.play(track)
+                activity.moveTaskToBack(true)
+            }
             withTimeout(120000) {
                 while (!graph.controller.state.value.playing) {
                     graph.controller.state.value.playbackError?.let { error(it) }
                     delay(100)
                 }
             }
+            if (InstrumentationRegistry.getArguments().getString("inspectOneUi") == "true") {
+                android.util.Log.i("RiffunaTest", "SYSTEM_MEDIA_PREVIEW")
+                delay(20000)
+            }
+            val power = context.getSystemService(android.os.PowerManager::class.java)
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                    instrumentation.uiAutomation.executeShellCommand("input keyevent 223")
+                )
+                .use { it.readBytes() }
+            withTimeout(5000) { while (power.isInteractive) delay(100) }
             val before = graph.controller.state.value.positionMs
-            instrumentation.uiAutomation.executeShellCommand("input keyevent 223").close()
-            withTimeout(10000) {
-                while (graph.controller.state.value.positionMs < before + 5000) delay(100)
+            withTimeout(95000) {
+                while (graph.controller.state.value.positionMs < before + 60000) {
+                    assertFalse(
+                        "The screen was turned back on during the background test",
+                        power.isInteractive,
+                    )
+                    graph.controller.state.value.playbackError?.let { error(it) }
+                    delay(250)
+                }
             }
             assertTrue(graph.controller.state.value.playing)
+            android.util.Log.i("RiffunaTest", "SCREEN_OFF_PLAYBACK_60S_OK")
+            val platformToken =
+                withTimeout(8000) {
+                    val manager =
+                        context.getSystemService(android.app.NotificationManager::class.java)
+                    var token: android.media.session.MediaSession.Token? = null
+                    while (token == null) {
+                        @Suppress("DEPRECATION")
+                        val published =
+                            manager.activeNotifications.firstNotNullOfOrNull { item ->
+                                if (item.id == 1002) null
+                                else
+                                    item.notification.extras.getParcelable<
+                                        android.media.session.MediaSession.Token
+                                    >(
+                                        android.app.Notification.EXTRA_MEDIA_SESSION
+                                    )
+                            }
+                        token = published
+                        if (token == null) delay(100)
+                    }
+                    token
+                }
+            val system = android.media.session.MediaController(context, platformToken)
+            assertEquals(
+                track.title,
+                system.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE),
+            )
+            val actions = checkNotNull(system.playbackState).actions
+            assertTrue(actions and android.media.session.PlaybackState.ACTION_SEEK_TO != 0L)
+            assertTrue(actions and android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT != 0L)
+            system.transportControls.seekTo(20000)
+            withTimeout(10000) {
+                while (graph.controller.state.value.positionMs !in 19000L..24000L) delay(100)
+            }
+            system.transportControls.skipToNext()
+            withTimeout(90000) {
+                while (
+                    graph.controller.state.value.current?.id != nextTrack.id ||
+                        !graph.controller.state.value.playing
+                ) {
+                    graph.controller.state.value.playbackError?.let { error(it) }
+                    delay(100)
+                }
+            }
+            val after = graph.controller.state.value.positionMs
+            withTimeout(15000) {
+                while (graph.controller.state.value.positionMs < after + 5000) delay(100)
+            }
             val token =
                 androidx.media3.session.SessionToken(
                     context,
@@ -241,6 +321,25 @@ class AndroidSmokeTest {
                     androidx.media3.session.MediaController.Builder(context, token).buildAsync()
             }
             media = future.get(15, TimeUnit.SECONDS)
+            lateinit var liked:
+                com.google.common.util.concurrent.ListenableFuture<
+                    androidx.media3.session.SessionResult
+                >
+            instrumentation.runOnMainSync {
+                liked =
+                    media!!.sendCustomCommand(
+                        androidx.media3.session.SessionCommand(
+                            "riffuna.TOGGLE_LIKE",
+                            android.os.Bundle.EMPTY,
+                        ),
+                        android.os.Bundle.EMPTY,
+                    )
+            }
+            assertEquals(
+                androidx.media3.session.SessionResult.RESULT_SUCCESS,
+                liked.get(5, TimeUnit.SECONDS).resultCode,
+            )
+            assertTrue(graph.controller.state.value.likes.any { it.id == nextTrack.id })
             instrumentation.runOnMainSync { media!!.pause() }
             withTimeout(5000) { while (graph.controller.state.value.playing) delay(100) }
             android.util.Log.i("RiffunaTest", "BACKGROUND_AND_MEDIA_SESSION_OK")

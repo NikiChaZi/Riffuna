@@ -44,7 +44,10 @@ async function ensurePlayer(api){
  if(!pending){pending=Player.create(undefined,nativeFetch).then(player=>api.session.player=player).finally(()=>playerRequests.delete(api));playerRequests.set(api,pending);}
  return pending;
 }
-function thumb(values){return [...(values||[])].sort((a,b)=>Math.abs((a.width||120)-360)-Math.abs((b.width||120)-360))[0]?.url||'';}
+function thumb(values){
+ const area=value=>(Number(value.width)||0)*(Number(value.height)||Number(value.width)||0);
+ return [...(values||[])].filter(value=>value?.url).sort((a,b)=>area(b)-area(a))[0]?.url||'';
+}
 const searches=new Map();
 function musicRow(row){
  if(row.item_type!=='song'||!row.id||!row.title)return null;

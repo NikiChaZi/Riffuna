@@ -84,16 +84,32 @@ internal fun RiffunaTheme(content: @Composable () -> Unit) {
 
 @Composable
 private fun Cover(track: Track?, size: Int, modifier: Modifier = Modifier) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val pixels = with(density) { size.dp.roundToPx() }
+    val url = track?.thumbnail.orEmpty()
+    val candidates = remember(url, pixels) { ArtworkRequests.candidates(url, pixels) }
+    var candidateIndex by remember(candidates) { mutableIntStateOf(0) }
+    val candidate = candidates.getOrNull(candidateIndex)
     Box(
         modifier.size(size.dp).clip(RoundedCornerShape((size / 8).dp)).background(Panel),
         contentAlignment = Alignment.Center,
     ) {
-        if (track?.thumbnail?.startsWith("https://") == true)
+        if (candidate?.startsWith("https://") == true)
             AsyncImage(
-                track.thumbnail,
+                candidate,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
+                filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
+                onError = { if (candidateIndex < candidates.lastIndex) candidateIndex++ },
+                onSuccess = { state ->
+                    val image = state.result.image
+                    if (
+                        ArtworkRequests.isPlaceholder(candidate, image.width, image.height) &&
+                            candidateIndex < candidates.lastIndex
+                    )
+                        candidateIndex++
+                },
             )
         else
             Icon(
