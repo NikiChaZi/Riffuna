@@ -10,6 +10,28 @@ class QueueTest {
     private fun track(id: Char) = Track(id.toString().repeat(11), "Song $id", "Artist", 180)
 
     @Test
+    fun queueSelectionUsesTheQueueAndSurvivesReordering() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val controller = LocalController(MemoryLibrary(), FakeSource(), FakeAudio())
+        try {
+            val a = track('a')
+            val b = track('b')
+            controller.enqueueMany(listOf(a, b))
+            controller.showView(LibraryView.QUEUE)
+            controller.selectTrack(b.id, control = true, shift = false)
+            assertEquals(setOf(b.id), controller.state.value.selectedIds)
+            controller.reorderQueue(listOf(b.id, a.id))
+            assertEquals(listOf(b, a), displayedTracks(controller.state.value))
+            assertEquals(setOf(b.id), controller.state.value.selectedIds)
+            controller.selectAll()
+            assertEquals(setOf(a.id, b.id), controller.state.value.selectedIds)
+        } finally {
+            controller.close()
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
     fun systemPauseDuringResolvePreventsLateAutoplay() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         Dispatchers.setMain(dispatcher)

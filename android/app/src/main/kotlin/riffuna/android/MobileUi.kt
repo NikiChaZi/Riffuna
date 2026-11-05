@@ -4,6 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,7 +22,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -31,10 +37,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import riffuna.core.*
 
 private val Coral = Color(0xFFFF875F)
@@ -132,25 +141,41 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
         remember(controller) { controller.state.map { it.screenSnapshot() }.distinctUntilChanged() }
     val state by screen.collectAsStateWithLifecycle(AppState())
     var playlistName by remember { mutableStateOf<String?>(null) }
-    var playlistTrack by remember { mutableStateOf<Track?>(null) }
+    var playlistTracks by remember { mutableStateOf<List<Track>?>(null) }
     var editingPlaylist by remember { mutableStateOf<PlaylistSummary?>(null) }
     var deletingPlaylist by remember { mutableStateOf<PlaylistSummary?>(null) }
     var settings by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(state.toast) { if (state.toast.isNotBlank()) snackbar.showSnackbar(state.toast) }
-    BackHandler(state.expanded || state.canGoBack) {
-        if (state.expanded) controller.openNowPlaying(false) else controller.navigateBack()
+    BackHandler(state.expanded || state.selectedIds.isNotEmpty() || state.canGoBack) {
+        if (state.expanded) controller.openNowPlaying(false)
+        else if (state.selectedIds.isNotEmpty()) controller.clearSelection()
+        else controller.navigateBack()
     }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             Column {
-                if (state.current != null) MiniPlayer(controller)
-                NavigationBar(containerColor = Graphite) {
+                AnimatedVisibility(
+                    visible = state.current != null,
+                    enter =
+                        if (state.reducedMotion) EnterTransition.None
+                        else fadeIn() + expandVertically(),
+                    exit =
+                        if (state.reducedMotion) ExitTransition.None
+                        else fadeOut() + shrinkVertically(),
+                ) {
+                    MiniPlayer(controller)
+                }
+                NavigationBar(containerColor = Graphite, tonalElevation = 0.dp) {
                     listOf(
                             Triple(LibraryView.HOME, "Главная", Icons.Outlined.Home),
                             Triple(LibraryView.SEARCH, "Поиск", Icons.Outlined.Search),
-                            Triple(LibraryView.LIKES, "Любимое", Icons.Outlined.FavoriteBorder),
+                            Triple(
+                                LibraryView.PLAYLISTS,
+                                "Библиотека",
+                                Icons.Outlined.LibraryMusic,
+                            ),
                             Triple(
                                 LibraryView.QUEUE,
                                 "Очередь",
@@ -159,10 +184,29 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                         )
                         .forEach { (view, label, icon) ->
                             NavigationBarItem(
-                                selected = state.view == view,
+                                selected =
+                                    state.view == view ||
+                                        (view == LibraryView.PLAYLISTS &&
+                                            state.view in
+                                                setOf(
+                                                    LibraryView.LIKES,
+                                                    LibraryView.HISTORY,
+                                                    LibraryView.LOCAL,
+                                                    LibraryView.PLAYLIST,
+                                                )),
                                 onClick = { controller.showView(view) },
                                 icon = { Icon(icon, null) },
                                 label = { Text(label, maxLines = 1) },
+                                colors =
+                                    NavigationBarItemDefaults.colors(
+                                        selectedIconColor = Coral,
+                                        selectedTextColor = Warm,
+                                        indicatorColor = Panel,
+                                        unselectedIconColor =
+                                            MaterialTheme.colorScheme.onSurfaceVariant,
+                                        unselectedTextColor =
+                                            MaterialTheme.colorScheme.onSurfaceVariant,
+                                    ),
                             )
                         }
                 }
@@ -175,8 +219,17 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "riffuna",
-                    fontSize = 30.sp,
+                    when (state.view) {
+                        LibraryView.HOME -> "riffuna"
+                        LibraryView.SEARCH -> "Поиск"
+                        LibraryView.PLAYLISTS -> "Библиотека"
+                        LibraryView.LIKES -> "Любимое"
+                        LibraryView.HISTORY -> "Недавно слушал"
+                        LibraryView.LOCAL -> "На устройстве"
+                        LibraryView.QUEUE -> "Очередь"
+                        else -> "Твоя музыка"
+                    },
+                    fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = (-1).sp,
                     modifier = Modifier.weight(1f),
@@ -194,14 +247,17 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(18.dp)) {
                         item {
                             Text(
-                                "Твоя музыка.\nВ твоём ритме.",
-                                fontSize = 32.sp,
-                                lineHeight = 36.sp,
+                                "Слушать дальше",
+                                fontSize = 28.sp,
+                                lineHeight = 34.sp,
                                 fontWeight = FontWeight.SemiBold,
                             )
                         }
                         item {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
                                 FilledTonalButton(
                                     onClick = { controller.showView(LibraryView.HISTORY) }
                                 ) {
@@ -254,7 +310,7 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                                     track,
                                     state,
                                     controller,
-                                    onPlaylist = { playlistTrack = track },
+                                    onPlaylist = { playlistTracks = listOf(track) },
                                 )
                             }
                         } else
@@ -283,12 +339,39 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                                     track,
                                     state,
                                     controller,
-                                    onPlaylist = { playlistTrack = track },
+                                    onPlaylist = { playlistTracks = listOf(track) },
                                 )
                             }
                         }
                     }
                 LibraryView.PLAYLISTS -> {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        AssistChip(
+                            onClick = { controller.showView(LibraryView.LIKES) },
+                            label = { Text("Любимое · ${state.likes.size}") },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.FavoriteBorder, null, Modifier.size(18.dp))
+                            },
+                        )
+                        AssistChip(
+                            onClick = { controller.showView(LibraryView.HISTORY) },
+                            label = { Text("История") },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.History, null, Modifier.size(18.dp))
+                            },
+                        )
+                        AssistChip(
+                            onClick = { controller.showView(LibraryView.LOCAL) },
+                            label = { Text("На устройстве") },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.FolderOpen, null, Modifier.size(18.dp))
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             "Плейлисты",
@@ -300,14 +383,48 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                             Icon(Icons.Outlined.Add, "Создать плейлист")
                         }
                     }
-                    LazyColumn {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (state.playlists.isEmpty())
+                            item {
+                                Column(Modifier.fillMaxWidth().padding(vertical = 36.dp)) {
+                                    Icon(
+                                        Icons.Outlined.LibraryMusic,
+                                        null,
+                                        Modifier.size(40.dp),
+                                        tint = Coral,
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(
+                                        "Собери своё настроение",
+                                        fontSize = 22.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        "Создай плейлист и добавляй в него песни через меню трека.",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+                                    FilledTonalButton(onClick = { playlistName = "" }) {
+                                        Text("Создать плейлист")
+                                    }
+                                }
+                            }
                         items(state.playlists, key = { it.id }) { p ->
                             var menu by remember { mutableStateOf(false) }
                             ListItem(
                                 headlineContent = { Text(p.name) },
                                 supportingContent = { Text("${p.trackCount} треков") },
-                                leadingContent = { Icon(Icons.Outlined.LibraryMusic, null) },
-                                modifier = Modifier.clickable { controller.openPlaylist(p.id) },
+                                leadingContent = {
+                                    Cover(
+                                        Track("playlist:${p.id}", p.name, thumbnail = p.thumbnail),
+                                        56,
+                                    )
+                                },
+                                colors = ListItemDefaults.colors(containerColor = Panel),
+                                modifier =
+                                    Modifier.clip(RoundedCornerShape(18.dp)).clickable {
+                                        controller.openPlaylist(p.id)
+                                    },
                                 trailingContent = {
                                     Box {
                                         IconButton(onClick = { menu = true }) {
@@ -399,9 +516,12 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                             TextButton(onClick = controller::clearQueue) { Text("Очистить") }
                     }
                     val tracks =
-                        if (state.view == LibraryView.QUEUE) state.queue else state.visibleTracks
+                        if (state.view == LibraryView.QUEUE) state.queue else displayedTracks(state)
                     if (tracks.isNotEmpty())
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Button(
                                 onClick = {
                                     if (state.view == LibraryView.QUEUE) controller.playQueue()
@@ -412,8 +532,16 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                                 Text("Слушать всё")
                             }
                             Spacer(Modifier.width(8.dp))
-                            Text("${tracks.size} треков", color = Color(0xFFAFBAAD))
+                            Text(
+                                "${tracks.size} треков",
+                                color = Color(0xFFAFBAAD),
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (state.view != LibraryView.QUEUE) LibrarySort(state, controller)
                         }
+                    if (state.selectedIds.isNotEmpty()) {
+                        SelectionActions(state, controller) { playlistTracks = it }
+                    }
                     if (state.searchLoading || state.localImporting)
                         LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 12.dp))
                     if (
@@ -442,32 +570,42 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                                 color = Color(0xFFAFBAAD),
                             )
                         }
+                    else if (state.view == LibraryView.QUEUE)
+                        QueueTracks(state, controller, Modifier.weight(1f)) {
+                            playlistTracks = listOf(it)
+                        }
                     else
-                        LazyColumn(Modifier.weight(1f)) {
-                            items(tracks, key = { it.id }) { track ->
-                                TrackRow(
-                                    track,
-                                    state,
-                                    controller,
-                                    onPlaylist = { playlistTrack = track },
-                                )
-                            }
-                            if (state.view == LibraryView.SEARCH && state.canLoadMore)
-                                item {
-                                    TextButton(
-                                        onClick = controller::loadMore,
-                                        modifier = Modifier.fillMaxWidth(),
-                                    ) {
-                                        Text("Показать ещё")
-                                    }
+                        key(state.view, state.playlistId) {
+                            LazyColumn(
+                                Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                items(tracks, key = { it.id }) { track ->
+                                    TrackRow(
+                                        track,
+                                        state,
+                                        controller,
+                                        onPlaylist = { playlistTracks = listOf(track) },
+                                    )
                                 }
-                            item { Spacer(Modifier.height(20.dp)) }
+                                if (state.view == LibraryView.SEARCH && state.canLoadMore)
+                                    item {
+                                        TextButton(
+                                            onClick = controller::loadMore,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Text("Показать ещё")
+                                        }
+                                    }
+                                item { Spacer(Modifier.height(20.dp)) }
+                            }
                         }
                 }
             }
         }
     }
     if (state.expanded) NowPlaying(controller) { controller.openNowPlaying(false) }
+    if (state.versionReference != null) RecordingVersions(state, controller)
     editingPlaylist?.let { playlist ->
         var name by remember(playlist.id) { mutableStateOf(playlist.name) }
         var description by remember(playlist.id) { mutableStateOf(playlist.description) }
@@ -569,9 +707,9 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { playlistName = null }) { Text("Отмена") } },
         )
-    playlistTrack?.let { track ->
+    playlistTracks?.let { selection ->
         AlertDialog(
-            onDismissRequest = { playlistTrack = null },
+            onDismissRequest = { playlistTracks = null },
             title = { Text("Добавить в плейлист") },
             text = {
                 Column {
@@ -579,8 +717,9 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                     state.playlists.forEach { p ->
                         TextButton(
                             onClick = {
-                                controller.addToPlaylist(p.id, listOf(track))
-                                playlistTrack = null
+                                controller.addToPlaylist(p.id, selection)
+                                controller.clearSelection()
+                                playlistTracks = null
                             }
                         ) {
                             Text(p.name)
@@ -588,26 +727,317 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { playlistTrack = null }) { Text("Закрыть") } },
+            confirmButton = { TextButton(onClick = { playlistTracks = null }) { Text("Закрыть") } },
         )
     }
 }
 
 @Composable
-private fun TrackRow(track: Track, state: AppState, c: LocalController, onPlaylist: () -> Unit) {
+private fun SelectionActions(
+    state: AppState,
+    c: LocalController,
+    onPlaylist: (List<Track>) -> Unit,
+) {
+    val tracks = if (state.view == LibraryView.QUEUE) state.queue else displayedTracks(state)
+    val selectedTracks = tracks.filter { it.id in state.selectedIds }
+    Surface(color = Panel, shape = RoundedCornerShape(16.dp)) {
+        Row(
+            Modifier.fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = c::clearSelection) {
+                Icon(Icons.Outlined.Close, "Снять выделение")
+            }
+            Text("${selectedTracks.size}", fontWeight = FontWeight.SemiBold)
+            TextButton(onClick = c::selectAll) { Text("Все") }
+            IconButton(
+                onClick = {
+                    selectedTracks
+                        .filter { track -> state.likes.none { it.id == track.id } }
+                        .forEach(c::toggleLike)
+                }
+            ) {
+                Icon(Icons.Outlined.FavoriteBorder, "Добавить выбранные в любимое")
+            }
+            IconButton(onClick = { c.enqueueMany(selectedTracks) }) {
+                Icon(Icons.Outlined.PlaylistAdd, "Добавить выбранные в очередь")
+            }
+            IconButton(onClick = { onPlaylist(selectedTracks) }) {
+                Icon(Icons.Outlined.LibraryMusic, "Добавить выбранные в плейлист")
+            }
+            if (state.view in setOf(LibraryView.LIKES, LibraryView.PLAYLIST, LibraryView.QUEUE))
+                IconButton(
+                    onClick = {
+                        if (state.view == LibraryView.QUEUE) {
+                            selectedTracks.forEach { c.removeFromQueue(it.id) }
+                            c.clearSelection()
+                        } else c.removeSelected()
+                    }
+                ) {
+                    Icon(Icons.Outlined.DeleteOutline, "Убрать выбранные")
+                }
+        }
+    }
+}
+
+@Composable
+private fun QueueTracks(
+    state: AppState,
+    c: LocalController,
+    modifier: Modifier,
+    onPlaylist: (Track) -> Unit,
+) {
+    val list = rememberLazyListState()
+    val density = LocalDensity.current
+    val edge = with(density) { 56.dp.toPx() }
+    var draggedId by remember { mutableStateOf<String?>(null) }
+    var dragCenter by remember { mutableFloatStateOf(0f) }
+    fun moveAtPointer() {
+        val id = draggedId ?: return
+        val visible = list.layoutInfo.visibleItemsInfo
+        val target =
+            visible.minByOrNull { kotlin.math.abs(dragCenter - it.offset - it.size / 2f) } ?: return
+        val queue = c.state.value.queue
+        val from = queue.indexOfFirst { it.id == id }
+        val to = queue.indexOfFirst { it.id == target.key }
+        if (from >= 0 && to >= 0 && from != to) {
+            val ids = queue.map { it.id }.toMutableList()
+            ids.add(to, ids.removeAt(from))
+            c.reorderQueue(ids)
+        }
+    }
+    LaunchedEffect(draggedId) {
+        if (draggedId == null) return@LaunchedEffect
+        while (isActive) {
+            val layout = list.layoutInfo
+            val top = layout.viewportStartOffset + edge
+            val bottom = layout.viewportEndOffset - edge
+            val scroll =
+                when {
+                    dragCenter < top -> -((top - dragCenter) / 4f).coerceIn(2f, 24f)
+                    dragCenter > bottom -> ((dragCenter - bottom) / 4f).coerceIn(2f, 24f)
+                    else -> 0f
+                }
+            if (scroll != 0f) {
+                list.scrollBy(scroll)
+                moveAtPointer()
+            }
+            delay(16)
+        }
+    }
+    LazyColumn(
+        modifier.fillMaxWidth(),
+        state = list,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        contentPadding = PaddingValues(bottom = 20.dp),
+    ) {
+        items(state.queue, key = { it.id }) { track ->
+            val dragging = draggedId == track.id
+            val handle =
+                Modifier.pointerInput(track.id) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = {
+                            val item =
+                                list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == track.id }
+                            if (item != null) {
+                                dragCenter = item.offset + item.size / 2f
+                                draggedId = track.id
+                            }
+                        },
+                        onDragEnd = { draggedId = null },
+                        onDragCancel = { draggedId = null },
+                        onDrag = { change, amount ->
+                            change.consume()
+                            if (draggedId == track.id) {
+                                dragCenter += amount.y
+                                moveAtPointer()
+                            }
+                        },
+                    )
+                }
+            TrackRow(
+                track,
+                state,
+                c,
+                onPlaylist = { onPlaylist(track) },
+                modifier =
+                    Modifier.zIndex(if (dragging) 1f else 0f).graphicsLayer {
+                        if (dragging) {
+                            val item =
+                                list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == track.id }
+                            translationY =
+                                if (item == null) 0f else dragCenter - item.offset - item.size / 2f
+                            shadowElevation = 8.dp.toPx()
+                        }
+                    },
+                dragHandle = handle,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RecordingVersions(state: AppState, c: LocalController) {
+    val reference = state.versionReference ?: return
+    var chosenId by remember(reference.id) { mutableStateOf<String?>(null) }
+    val chosen = state.versions.firstOrNull { it.track.id == chosenId }
+    AlertDialog(
+        onDismissRequest = c::closeVersions,
+        title = { Text("Другие записи") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(reference.title, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Названия загрузок не подтверждают отсутствие цензуры. Выбери подходящую запись на слух.",
+                    fontSize = 12.sp,
+                )
+                if (state.versionsLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (state.versionError.isNotBlank())
+                    Text(state.versionError, color = MaterialTheme.colorScheme.error)
+                if (state.versions.isEmpty() && !state.versionsLoading)
+                    Text("Подходящих записей не найдено")
+                LazyColumn(
+                    Modifier.heightIn(max = 360.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(state.versions, key = { it.track.id }) { version ->
+                        Surface(
+                            color =
+                                if (chosenId == version.track.id)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                else Panel,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier =
+                                Modifier.fillMaxWidth().clickable { chosenId = version.track.id },
+                        ) {
+                            Column(
+                                Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(version.label, color = Coral, fontSize = 12.sp)
+                                Text(version.track.title, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    version.track.artist +
+                                        " · " +
+                                        time(version.track.duration * 1000L),
+                                    fontSize = 12.sp,
+                                )
+                                Text(
+                                    version.evidence,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                TextButton(onClick = { c.resetVersion(reference) }) { Text("Исходная запись") }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = chosen != null,
+                onClick = { chosen?.let { c.chooseVersion(reference, it.track) } },
+            ) {
+                Text("Слушать")
+            }
+        },
+        dismissButton = { TextButton(onClick = c::closeVersions) { Text("Закрыть") } },
+    )
+}
+
+@Composable
+private fun LibrarySort(state: AppState, controller: LocalController) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) { Icon(Icons.Outlined.Sort, "Сортировка") }
+        DropdownMenu(expanded, { expanded = false }) {
+            if (state.view == LibraryView.SEARCH) {
+                listOf(
+                        SearchOrder.RELEVANCE to "По релевантности",
+                        SearchOrder.VIEWS to "По просмотрам",
+                    )
+                    .forEach { (order, label) ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(label, color = if (state.searchOrder == order) Coral else Warm)
+                            },
+                            onClick = {
+                                expanded = false
+                                controller.setSearchOrder(order)
+                            },
+                        )
+                    }
+            } else
+                listOf(
+                        LocalOrder.CUSTOM to "Порядок библиотеки",
+                        LocalOrder.TITLE to "По названию",
+                        LocalOrder.ARTIST to "По исполнителю",
+                        LocalOrder.SHORTEST to "Сначала короткие",
+                        LocalOrder.LONGEST to "Сначала длинные",
+                    )
+                    .forEach { (order, label) ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(label, color = if (state.localOrder == order) Coral else Warm)
+                            },
+                            onClick = {
+                                expanded = false
+                                controller.setLocalOrder(order)
+                            },
+                        )
+                    }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun TrackRow(
+    track: Track,
+    state: AppState,
+    c: LocalController,
+    onPlaylist: () -> Unit,
+    modifier: Modifier = Modifier,
+    dragHandle: Modifier? = null,
+) {
     var menu by remember { mutableStateOf(false) }
     val current = track.id == state.current?.id
+    val isSelected = track.id in state.selectedIds
+    val background by
+        animateColorAsState(
+            if (current || isSelected) Panel else Color.Transparent,
+            tween(if (state.reducedMotion) 0 else 180),
+            label = "track-selection",
+        )
     Row(
-        Modifier.fillMaxWidth()
+        modifier
+            .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(if (current) Panel else Color.Transparent)
-            .clickable {
-                if (state.view == LibraryView.QUEUE) c.playQueueTrack(track.id) else c.play(track)
-            }
+            .background(background)
+            .semantics { selected = isSelected }
+            .combinedClickable(
+                onLongClick = {
+                    if (state.view == LibraryView.HOME) menu = true
+                    else c.selectTrack(track.id, control = true, shift = false)
+                },
+                onClick = {
+                    if (state.selectedIds.isNotEmpty())
+                        c.selectTrack(track.id, control = true, shift = false)
+                    else if (state.view == LibraryView.QUEUE) c.playQueueTrack(track.id)
+                    else c.play(track)
+                },
+            )
             .padding(vertical = 10.dp, horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(track, 52)
+        if (isSelected)
+            Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
+                Icon(Icons.Outlined.CheckCircle, "Выбрано", tint = Coral)
+            }
+        else Cover(track, 52)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -633,9 +1063,23 @@ private fun TrackRow(track: Track, state: AppState, c: LocalController, onPlayli
                 tint = if (state.likes.any { it.id == track.id }) Coral else Color(0xFFAFBAAD),
             )
         }
+        if (dragHandle != null)
+            Icon(
+                Icons.Outlined.DragHandle,
+                "Удерживай для перестановки",
+                modifier = dragHandle.size(40.dp).padding(8.dp),
+            )
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "Действия") }
             DropdownMenu(menu, { menu = false }) {
+                if (!track.id.startsWith("local:"))
+                    DropdownMenuItem(
+                        text = { Text("Другие записи") },
+                        onClick = {
+                            menu = false
+                            c.findVersions(track)
+                        },
+                    )
                 DropdownMenuItem(
                     text = { Text("Следующим") },
                     onClick = {
@@ -728,10 +1172,12 @@ private fun MiniPlayer(c: LocalController) {
                     IconButton(onClick = c::toggle) {
                         Icon(
                             if (state.playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-                            "Пауза / играть",
+                            if (state.playing) "Пауза" else "Воспроизвести",
                         )
                     }
-                IconButton(onClick = c::next) { Icon(Icons.Outlined.SkipNext, "Следующий") }
+                IconButton(onClick = c::next, enabled = state.queue.isNotEmpty()) {
+                    Icon(Icons.Outlined.SkipNext, "Следующий")
+                }
             }
             LinearProgressIndicator(
                 progress = {
@@ -741,6 +1187,8 @@ private fun MiniPlayer(c: LocalController) {
                     )
                 },
                 modifier = Modifier.fillMaxWidth().height(2.dp),
+                color = Coral,
+                trackColor = MaterialTheme.colorScheme.outlineVariant,
             )
         }
     }
@@ -807,7 +1255,23 @@ private fun NowPlaying(c: LocalController, close: () -> Unit) {
                         ) {
                             val coverSize =
                                 minOf(maxWidth, maxHeight, 400.dp).value.toInt().coerceAtLeast(1)
-                            Cover(state.current, coverSize)
+                            AnimatedContent(
+                                targetState = state.current,
+                                transitionSpec = {
+                                    if (state.reducedMotion)
+                                        EnterTransition.None togetherWith ExitTransition.None
+                                    else
+                                        (fadeIn(tween(320)) +
+                                            scaleIn(
+                                                initialScale = 0.94f,
+                                                animationSpec = tween(320),
+                                            )) togetherWith fadeOut(tween(180))
+                                },
+                                contentKey = { it?.id },
+                                label = "playing-artwork",
+                            ) { track ->
+                                Cover(track, coverSize)
+                            }
                         }
                 }
                 Text(
@@ -870,7 +1334,7 @@ private fun NowPlaying(c: LocalController, close: () -> Unit) {
                             Icon(
                                 if (state.playing) Icons.Outlined.Pause
                                 else Icons.Outlined.PlayArrow,
-                                "Пауза / играть",
+                                if (state.playing) "Пауза" else "Воспроизвести",
                                 modifier = Modifier.size(42.dp),
                             )
                     }

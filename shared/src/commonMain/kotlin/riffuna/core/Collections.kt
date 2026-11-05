@@ -1,6 +1,7 @@
 package riffuna.core
 
 fun displayedTracks(state: AppState): List<Track> {
+    if (state.view == LibraryView.QUEUE) return state.queue
     val source =
         when (state.view) {
             LibraryView.HOME,

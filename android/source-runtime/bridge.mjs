@@ -44,18 +44,20 @@ async function ensurePlayer(api){
  if(!pending){pending=Player.create(undefined,nativeFetch).then(player=>api.session.player=player).finally(()=>playerRequests.delete(api));playerRequests.set(api,pending);}
  return pending;
 }
-/* RIFFUNA_THUMBNAIL */
-const searches=new Map();
-function musicRow(row){
- if(row.item_type!=='song'||!row.id||!row.title)return null;
- return {id:row.id,title:String(row.title),artist:(row.artists||row.authors||[]).map(a=>a.name).filter(Boolean).join(', ')||'YouTube',duration:row.duration?.seconds||0,thumbnail:thumb(row.thumbnail?.contents),musicType:'MUSIC_VIDEO_TYPE_ATV'};
-}
-/* RIFFUNA_MUSIC_SEARCH */
+const searches=new Map();const metadata=new Map();const catalogIds=new Set();
+/* RIFFUNA_CATALOG */
 /* RIFFUNA_RESOLVE */
 
 async function execute(r){
  if(r.action==='search'){const result=await musicSearch(String(r.query||''),Math.min(180,Math.max(1,r.limit||40)));setTimeout(()=>Promise.all([yt().then(ensurePlayer),mintPlaybackToken.prepare()]).catch(()=>{}),0);return result;}
  if(r.action==='resolve')return resolve(r.id,'webm');
+ if(r.action==='metadata')return info(r.id);
+ if(r.action==='videos')return videoSearch(String(r.query||''));
+ if(r.action==='metadata_batch'){
+  const ids=[...new Set(r.ids||[])].slice(0,80),tracks=[];
+  for(let start=0;start<ids.length;start+=4)tracks.push(...await Promise.all(ids.slice(start,start+4).map(id=>info(id).catch(()=>null))));
+  return {tracks:tracks.filter(Boolean)};
+ }
  throw Error('UnknownAction');
 }
 globalThis.riffunaRequest=async(id,request)=>{

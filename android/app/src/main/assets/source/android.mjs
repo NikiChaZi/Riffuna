@@ -44,14 +44,15 @@ async function ensurePlayer(api){
  if(!pending){pending=Player.create(undefined,nativeFetch).then(player=>api.session.player=player).finally(()=>playerRequests.delete(api));playerRequests.set(api,pending);}
  return pending;
 }
+const searches=new Map();const metadata=new Map();const catalogIds=new Set();
 function thumb(values){
  const area=value=>(Number(value.width)||0)*(Number(value.height)||Number(value.width)||0);
  return [...(values||[])].filter(value=>value?.url).sort((a,b)=>area(b)-area(a))[0]?.url||'';
 }
-const searches=new Map();
 function musicRow(row){
- if(row.item_type!=='song'||!row.id||!row.title)return null;
- return {id:row.id,title:String(row.title),artist:(row.artists||row.authors||[]).map(a=>a.name).filter(Boolean).join(', ')||'YouTube',duration:row.duration?.seconds||0,thumbnail:thumb(row.thumbnail?.contents),musicType:'MUSIC_VIDEO_TYPE_ATV'};
+ if(row.item_type==='song'&&row.id){catalogIds.add(row.id);while(catalogIds.size>2000)catalogIds.delete(catalogIds.values().next().value);}
+ if(!row.id||!row.title)return null;
+ return {id:row.id,title:String(row.title),artist:(row.artists||row.authors||[]).map(a=>a.name).filter(Boolean).join(', ')||'YouTube',duration:row.duration?.seconds||0,thumbnail:thumb(row.thumbnail?.contents),musicType:row.item_type==='song'?'MUSIC_VIDEO_TYPE_ATV':row.item_type==='video'?'MUSIC_VIDEO_TYPE_UGC':'',album:row.album?.name||'',live:false};
 }
 async function musicSearch(query,limit){
  const old=searches.get(query);if(old&&old.expires>Date.now()&&(old.rows.length>=limit||old.done))return {tracks:old.rows.slice(0,limit)};
@@ -65,6 +66,26 @@ async function musicSearch(query,limit){
  }
  searches.set(query,{rows,page,done,expires:Date.now()+300000});while(searches.size>12)searches.delete(searches.keys().next().value);
  return {tracks:rows.slice(0,limit)};
+}
+async function info(id){
+ if(!/^[\w-]{11}$/.test(id))throw Error('InvalidId');
+ const saved=metadata.get(id);if(saved?.expires>Date.now())return saved.row;
+ const api=await yt();const value=await api.getBasicInfo(id,{client:'WEB'});const b=value.basic_info;
+ const raw=value.page?.[0]?.video_details||{};
+ let available=value.playability_status?.status==='OK';
+ let live=!!(b.is_live||b.is_live_content||b.is_upcoming);
+ let type=b.music_video_type||raw.music_video_type||'';
+ if(!type&&catalogIds.has(id))type='MUSIC_VIDEO_TYPE_ATV';
+ if(!type)try{const music=await api.session.actions.execute('/player',{videoId:id,client:'YTMUSIC'});type=music.data?.videoDetails?.musicVideoType||music.data?.currentVideoEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType||'';if(music.data?.videoDetails?.videoId===id&&music.data?.playabilityStatus?.status==='OK')available=true;}catch{}
+
+ if(!available)for(const client of ['VISIONOS','IOS'])try{const playable=await api.getBasicInfo(id,{client});if(playable.basic_info.id===id&&playable.playability_status?.status==='OK'){available=true;live=live||!!(playable.basic_info.is_live||playable.basic_info.is_live_content||playable.basic_info.is_upcoming);break;}}catch{}
+ const row={id:b.id||id,title:b.title||'',artist:(b.author||b.channel?.name||'YouTube').replace(/\s*[-–—]\s*Topic\s*$/i,''),duration:b.duration||b.length_seconds||0,thumbnail:thumb(b.thumbnail),musicType:type,category:b.category||'',live,viewCount:Number.isSafeInteger(b.view_count)?b.view_count:null,published:b.publish_date||'',storyboards:value.storyboards?.boards||[],available};
+ metadata.set(id,{row,expires:Date.now()+300000});while(metadata.size>250)metadata.delete(metadata.keys().next().value);
+ return row;
+}
+async function videoSearch(query){
+ const page=await(await yt()).search(query,{type:'video'});
+ return {tracks:(page.videos||[]).slice(0,16).map(v=>({id:v.id,title:v.title?.text||String(v.title||''),artist:v.author?.name||'YouTube',duration:v.duration?.seconds||0,thumbnail:thumb(v.thumbnails),live:!!v.is_live,musicType:''}))};
 }
 async function resolve(id,preferredContainer='mp4'){
  if(!/^[\w-]{11}$/.test(id))throw Error('InvalidId');
@@ -126,6 +147,13 @@ async function resolve(id,preferredContainer='mp4'){
 async function execute(r){
  if(r.action==='search'){const result=await musicSearch(String(r.query||''),Math.min(180,Math.max(1,r.limit||40)));setTimeout(()=>Promise.all([yt().then(ensurePlayer),mintPlaybackToken.prepare()]).catch(()=>{}),0);return result;}
  if(r.action==='resolve')return resolve(r.id,'webm');
+ if(r.action==='metadata')return info(r.id);
+ if(r.action==='videos')return videoSearch(String(r.query||''));
+ if(r.action==='metadata_batch'){
+  const ids=[...new Set(r.ids||[])].slice(0,80),tracks=[];
+  for(let start=0;start<ids.length;start+=4)tracks.push(...await Promise.all(ids.slice(start,start+4).map(id=>info(id).catch(()=>null))));
+  return {tracks:tracks.filter(Boolean)};
+ }
  throw Error('UnknownAction');
 }
 globalThis.riffunaRequest=async(id,request)=>{

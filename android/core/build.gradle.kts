@@ -14,6 +14,7 @@ kotlin {
         compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
     }
     sourceSets {
+        getByName("androidMain") { kotlin.srcDir("../../shared/src/jvmMain/kotlin") }
         commonTest {
             kotlin.srcDir("../../shared/src/commonTest/kotlin")
             dependencies {

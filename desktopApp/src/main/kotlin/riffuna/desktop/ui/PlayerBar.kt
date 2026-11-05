@@ -185,7 +185,8 @@ fun PlayerBar(
                             {},
                             Modifier.weight(1f),
                             onCommit = { controller.seek((it * state.durationMs).toLong()) },
-                            enabled = state.seekable && state.durationMs > 0,
+                            commitOnPress = true,
+                            enabled = state.current != null && state.durationMs > 0,
                             label = { timeLabel((it * state.durationMs).toLong()) },
                         )
                         Text(

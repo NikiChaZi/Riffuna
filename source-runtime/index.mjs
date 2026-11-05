@@ -7,6 +7,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
 import {randomUUID} from 'node:crypto';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import { Agent, ProxyAgent, fetch as httpFetch, Request, Response, Headers } from 'undici';
@@ -19,13 +21,24 @@ trace({phase:'start',proxy_configured:!!(process.env.HTTPS_PROXY||process.env.HT
 const fetchNative=httpFetch;
 const proxyUri=process.env.HTTPS_PROXY||process.env.HTTP_PROXY;
 const dispatcher=proxyUri?new ProxyAgent({uri:proxyUri,connections:4,connectTimeout:10000}):undefined;
+const runFile=promisify(execFile);
 const boundedFetch=async(input,init={})=>{
  const value=typeof input==='string'?input:input instanceof URL?input.href:input.url;const url=new URL(value);
  if(url.hostname==='youtubei.googleapis.com'&&!url.searchParams.has('key')){url.searchParams.set('key',Constants.CLIENTS.WEB.API_KEY);input=new Request(url,input instanceof Request?input:undefined);}
  const phase=url.pathname.includes('iframe_api')?'player-version':url.pathname.endsWith('base.js')?'player-script':url.pathname.includes('/player')?'player-api':url.hostname.endsWith('googlevideo.com')?'audio-range':'session-api';
  const headers=new Headers(init.headers||(input instanceof Request?input.headers:undefined));
  const selectedDispatcher=init.dispatcher||dispatcher;
- try{const response=await fetchNative(input,{...init,headers,...(selectedDispatcher?{dispatcher:selectedDispatcher}:{}),signal:AbortSignal.any([...(init.signal?[init.signal]:[]),AbortSignal.timeout(18000)])});trace({phase,status:response.status});return response;}
+ // The Windows proxy can stall Undici while downloading the player script.
+ if(phase==='player-script'&&url.hostname==='www.youtube.com'&&proxyUri&&process.platform==='win32'&&process.env.SystemRoot){
+  try{
+   const {stdout}=await runFile(path.join(process.env.SystemRoot,'System32','curl.exe'),
+    ['--disable','--fail','--silent','--compressed','--proxy',proxyUri,'--max-time','30','--',url.href],
+    {encoding:'buffer',maxBuffer:8*1024*1024,windowsHide:true,signal:init.signal});
+   if(stdout.length){trace({phase,status:200});return new Response(stdout);}
+  }catch(error){if(init.signal?.aborted)throw error;trace({phase,type:error.name});}
+ }
+ const timeout=phase==='player-script'?35000:18000;
+ try{const response=await fetchNative(input,{...init,headers,...(selectedDispatcher?{dispatcher:selectedDispatcher}:{}),signal:AbortSignal.any([...(init.signal?[init.signal]:[]),AbortSignal.timeout(timeout)])});trace({phase,status:response.status});return response;}
  catch(error){trace({phase,type:error.name,cause:error.cause?.code||'',proxy_endpoint:!!proxyUri&&String(error.cause?.message||'').includes(new URL(proxyUri).host),main_youtube:url.hostname==='www.youtube.com',music_youtube:url.hostname==='music.youtube.com'});throw error;}
 };
 const mintPlaybackToken=createPlaybackTokenProvider(boundedFetch);
@@ -66,8 +79,17 @@ const playerManifest=path.join(cacheDirectory,'riffuna-player.json');
 async function createSession(){
  return Innertube.create({lang:'en',location:'US',cache:new UniversalCache(true,cacheDirectory),fetch:boundedFetch,retrieve_player:false,generate_session_locally:true,retrieve_innertube_config:false});
 }
-async function ensurePlayer(api){
+const playerRequests=new WeakMap();
+function ensurePlayer(api){
  if(api.session.player)return api.session.player;
+ let pending=playerRequests.get(api);
+ if(!pending){
+  pending=loadPlayer(api).finally(()=>playerRequests.delete(api));
+  playerRequests.set(api,pending);
+ }
+ return pending;
+}
+async function loadPlayer(api){
  let playerId;let verifiedAt=Date.now();
  try{const saved=JSON.parse(await fs.readFile(playerManifest,'utf8'));if(/^[a-f0-9]{8}$/i.test(saved.id)&&Date.now()-saved.at>=0&&Date.now()-saved.at<900000){playerId=saved.id;verifiedAt=saved.at;}}catch{}
  let player;

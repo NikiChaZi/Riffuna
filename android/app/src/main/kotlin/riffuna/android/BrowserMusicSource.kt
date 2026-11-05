@@ -15,6 +15,7 @@ import kotlinx.serialization.json.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import riffuna.catalog.*
 import riffuna.core.*
 
 /**
@@ -299,33 +300,248 @@ class BrowserMusicSource(
             }
         }
 
-    override suspend fun search(query: String, limit: Int): List<Track> {
-        val rows =
+    private suspend fun request(values: JsonObject): JsonObject =
+        request(values.getValue("action").jsonPrimitive.content, values - "action")
+
+    override suspend fun search(query: String, limit: Int): List<Track> =
+        searchSorted(query, limit, SearchOrder.RELEVANCE)
+
+    override suspend fun searchSorted(query: String, limit: Int, order: SearchOrder): List<Track> {
+        val input = query.trim()
+        if (input.isEmpty() || limit <= 0) return emptyList()
+        require(input.length <= 500)
+        if (input.startsWith("http://") || input.startsWith("https://")) {
+            val uri = java.net.URI(input)
+            require(
+                uri.host?.lowercase() in
+                    setOf(
+                        "youtu.be",
+                        "www.youtu.be",
+                        "youtube.com",
+                        "www.youtube.com",
+                        "music.youtube.com",
+                        "m.youtube.com",
+                    )
+            )
+            val id =
+                if (uri.host!!.endsWith("youtu.be")) uri.path.trim('/')
+                else
+                    uri.rawQuery
+                        .orEmpty()
+                        .split('&')
+                        .firstOrNull { it.startsWith("v=") }
+                        ?.substringAfter('=') ?: uri.path.split('/').last()
+            val row =
+                request(
+                    buildJsonObject {
+                        put("action", "metadata")
+                        put("id", id)
+                    }
+                )
+            return listOf(
+                MusicRules.catalog(row, "")
+                    ?: error("Ссылка не ведёт к студийной музыкальной записи")
+            )
+        }
+        val relevance = SearchRelevance(input)
+        val text = if (input.all { it in '\u0400'..'\u052f' }) "\"$input\"" else input
+        val result =
             request(
-                    "search",
-                    mapOf("query" to JsonPrimitive(query), "limit" to JsonPrimitive(limit)),
-                )["tracks"]
+                buildJsonObject {
+                    put("action", "search")
+                    put("query", text)
+                    put("limit", maxOf(80, limit * 2).coerceAtMost(180))
+                }
+            )
+        val tracks =
+            result["tracks"]
                 ?.jsonArray
                 .orEmpty()
-        return rows
-            .map { value ->
-                val r = value.jsonObject
-                Track(
-                    r.getValue("id").jsonPrimitive.content,
-                    r.getValue("title").jsonPrimitive.content,
-                    r["artist"]?.jsonPrimitive?.content ?: "YouTube",
-                    r["duration"]?.jsonPrimitive?.intOrNull ?: 0,
-                    r["thumbnail"]?.jsonPrimitive?.content.orEmpty(),
+                .mapNotNull { MusicRules.catalog(it.jsonObject, "") }
+                .filter { relevance.score(it) >= 0 }
+                .distinctBy { it.id }
+                .toMutableList()
+        if (relevance.needsUploadFallback(tracks)) {
+            val found =
+                runCatching {
+                        request(
+                            buildJsonObject {
+                                put("action", "videos")
+                                put("query", input)
+                            }
+                        )
+                    }
+                    .getOrNull()
+            val uploads =
+                found
+                    ?.get("tracks")
+                    ?.jsonArray
+                    .orEmpty()
+                    .mapNotNull { MusicRules.track(it.jsonObject) }
+                    .filter {
+                        it.duration in 1..1200 &&
+                            !MusicRules.excluded.containsMatchIn(it.title) &&
+                            relevance.score(it) >= 0
+                    }
+                    .take(6)
+            for (upload in uploads) {
+                val info =
+                    runCatching {
+                            request(
+                                buildJsonObject {
+                                    put("action", "metadata")
+                                    put("id", upload.id)
+                                }
+                            )
+                        }
+                        .getOrNull() ?: continue
+                val type = info["musicType"]?.jsonPrimitive?.content.orEmpty()
+                val category = info["category"]?.jsonPrimitive?.content.orEmpty()
+                val officialAudio =
+                    Regex(
+                            "\\b(?:official\\s+audio|audio\\s+only|audio|аудио)\\b",
+                            RegexOption.IGNORE_CASE,
+                        )
+                        .containsMatchIn(upload.title)
+                if (
+                    info["live"]?.jsonPrimitive?.booleanOrNull != true &&
+                        (type == "MUSIC_VIDEO_TYPE_ATV" ||
+                            (category.equals("Music", true) &&
+                                (type == "MUSIC_VIDEO_TYPE_UGC" ||
+                                    (type == "MUSIC_VIDEO_TYPE_OMV" && officialAudio))))
+                ) {
+                    val split = upload.title.split(Regex("\\s+[-–—]\\s+"), 2)
+                    val corrected =
+                        if (
+                            split.size == 2 &&
+                                MusicRules.words(split[0]).size <= 5 &&
+                                !MusicRules.musicalVersion.containsMatchIn(split[0]) &&
+                                relevance.score(upload.copy(title = split[1], artist = split[0])) >=
+                                    0
+                        )
+                            upload.copy(title = split[1], artist = split[0])
+                        else upload
+                    tracks.add(
+                        corrected.copy(viewCount = info["viewCount"]?.jsonPrimitive?.longOrNull)
+                    )
+                }
+            }
+        }
+        val unique = tracks.distinctBy { it.id }
+        if (order == SearchOrder.VIEWS) {
+            val known =
+                request(
+                        buildJsonObject {
+                            put("action", "metadata_batch")
+                            put("ids", JsonArray(unique.take(80).map { JsonPrimitive(it.id) }))
+                        }
+                    )["tracks"]
+                    ?.jsonArray
+                    .orEmpty()
+                    .associate { v ->
+                        val row = v.jsonObject
+                        row["id"]!!.jsonPrimitive.content to
+                            row["viewCount"]?.jsonPrimitive?.longOrNull
+                    }
+            val counted = unique.map { it.copy(viewCount = known[it.id] ?: it.viewCount) }
+            if (counted.isNotEmpty() && counted.none { it.viewCount != null })
+                error("Не удалось получить просмотры")
+            return counted
+                .sortedWith(
+                    compareByDescending<Track> { it.viewCount != null }
+                        .thenByDescending { it.viewCount }
+                )
+                .take(limit)
+        }
+        return unique.sortedByDescending { relevance.score(it) }.take(limit)
+    }
+
+    override suspend fun alternatives(track: Track): List<RecordingVersion> {
+        val base = track.artist + " " + MusicRules.songTitle(track.title, track.artist)
+        val found = mutableListOf<Track>()
+        val evidence = mutableMapOf<String, String>()
+        for (query in
+            listOf(base, base + " uncensored", base + " без цензуры", base + " original")) {
+            runCatching { searchSorted(query, 36, SearchOrder.RELEVANCE) }
+                .getOrNull()
+                ?.let(found::addAll)
+        }
+        val raw =
+            runCatching {
+                    request(
+                        buildJsonObject {
+                            put("action", "videos")
+                            put("query", base)
+                        }
+                    )
+                }
+                .getOrNull()
+        val uploads =
+            raw?.get("tracks")
+                ?.jsonArray
+                .orEmpty()
+                .mapNotNull { MusicRules.track(it.jsonObject) }
+                .filter {
+                    it.id != track.id &&
+                        !MusicRules.excluded.containsMatchIn(it.artist) &&
+                        MusicRules.versionMatches(track, it)
+                }
+                .take(4)
+        for (upload in uploads) {
+            val info =
+                runCatching {
+                        request(
+                            buildJsonObject {
+                                put("action", "metadata")
+                                put("id", upload.id)
+                            }
+                        )
+                    }
+                    .getOrNull() ?: continue
+            val confirmed = MusicRules.track(info) ?: continue
+            if (
+                info["available"]?.jsonPrimitive?.booleanOrNull != true ||
+                    info["live"]?.jsonPrimitive?.booleanOrNull == true ||
+                    info["category"]?.jsonPrimitive?.content !in setOf("Music", "People & Blogs") ||
+                    !MusicRules.versionMatches(track, confirmed)
+            )
+                continue
+            val observed =
+                runCatching { AndroidStoryboardCheck.inspect(info, http) }.getOrNull() ?: continue
+            found.add(confirmed)
+            evidence[confirmed.id] = observed
+        }
+        return found
+            .distinctBy { it.id }
+            .filter { it.id != track.id && MusicRules.versionMatches(track, it) }
+            .sortedWith(
+                compareByDescending<Track> {
+                        MusicRules.profile(it.title) == MusicRules.profile(track.title)
+                    }
+                    .thenBy { kotlin.math.abs(it.duration - track.duration) }
+            )
+            .take(12)
+            .map { candidate ->
+                val claim =
+                    Regex(
+                            "(?:\\(|\\[|[-–—:]\\s*)(?:uncensored|uncut|explicit|без\\s+цензуры)",
+                            RegexOption.IGNORE_CASE,
+                        )
+                        .containsMatchIn(candidate.title)
+                val labels =
+                    MusicRules.profile(candidate.title) +
+                        (if (claim) listOf("«Без цензуры» — заявлено") else emptyList())
+                val note =
+                    "Совпадают название и исполнитель; длительность ${candidate.duration} с (разница ${kotlin.math.abs(candidate.duration-track.duration)} с). " +
+                        evidence[candidate.id].orEmpty() +
+                        " Содержание и отсутствие цензуры не проверены."
+                val title = MusicRules.songTitle(candidate.title, track.artist)
+                RecordingVersion(
+                    candidate.copy(title = title, artist = track.artist),
+                    labels.joinToString(" · ").ifBlank { "Другая загрузка" },
+                    note,
                 )
             }
-            .filter {
-                !Regex(
-                        "(?:\\(|\\[|[-–—]\\s*)(?:live|концерт|клип|reaction|разбор|1 час)\\b",
-                        RegexOption.IGNORE_CASE,
-                    )
-                    .containsMatchIn(it.title)
-            }
-            .distinctBy { it.id }
     }
 
     private val resolved = ConcurrentHashMap<String, Pair<Long, AudioSource>>()
@@ -376,6 +592,8 @@ class BrowserMusicSource(
     private val lyrics = AndroidLyrics(http, library)
 
     override suspend fun lyricsPacket(track: Track, force: Boolean) = lyrics.load(track, force)
+
+    override suspend fun enrichLyrics(track: Track, base: LyricsPacket) = lyrics.enrich(track, base)
 
     override suspend fun localTracks(): List<Track> =
         runCatching { Json.decodeFromString<List<Track>>(library.setting("local-files", "[]")) }

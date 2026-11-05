@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import kotlin.test.*
@@ -17,6 +19,46 @@ import riffuna.desktop.ui.RiffunaTheme
 
 /** Dispatches real Compose pointer events offscreen, without controlling desktop windows. */
 class ProgressSliderTest {
+    @Test
+    fun hoveringUntilTheTimeLabelAppearsDoesNotBlockClicks() = runBlocking {
+        val commits = mutableListOf<Float>()
+        withSlider(commitOnPress = true, commit = commits::add) { scene ->
+            scene.pointer(PointerEventType.Enter, 160f)
+            scene.pointer(PointerEventType.Move, 160f)
+            delay(350)
+            scene.pointer(PointerEventType.Move, 160f)
+            scene.pointer(PointerEventType.Press, 160f)
+            scene.pointer(PointerEventType.Release, 160f)
+            assertEquals(.8f, commits.single(), .01f)
+        }
+    }
+
+    @Test
+    fun playbackSliderSeeksOnPressAnywhereWithoutDraggingOrWaitingForRelease() = runBlocking {
+        val commits = mutableListOf<Float>()
+        withSlider(commitOnPress = true, commit = commits::add) { scene ->
+            scene.pointer(PointerEventType.Press, 160f)
+            assertEquals(.8f, commits.single(), .01f)
+            scene.pointer(PointerEventType.Release, 160f)
+            assertEquals(1, commits.size, "Release must not repeat a click seek")
+            scene.pointer(PointerEventType.Press, 40f)
+            assertEquals(.2f, commits.last(), .01f)
+            scene.pointer(PointerEventType.Release, 40f)
+        }
+        assertEquals(2, commits.size)
+    }
+
+    @Test
+    fun consumedMouseReleaseStillCommitsTheClick() = runBlocking {
+        val commits = mutableListOf<Float>()
+        withSlider(consumeRelease = true, commit = commits::add) { scene ->
+            scene.pointer(PointerEventType.Press, 160f)
+            scene.pointer(PointerEventType.Release, 160f)
+        }
+        assertEquals(1, commits.size)
+        assertEquals(.8f, commits.single(), .01f)
+    }
+
     @Test
     fun separateClicksSeekForwardAndBackwardWithoutDragging() = runBlocking {
         val commits = mutableListOf<Float>()
@@ -62,6 +104,8 @@ class ProgressSliderTest {
 
     private suspend fun withSlider(
         enabled: Boolean = true,
+        consumeRelease: Boolean = false,
+        commitOnPress: Boolean = false,
         commit: (Float) -> Unit,
         block: suspend (ImageComposeScene) -> Unit,
     ) {
@@ -72,8 +116,14 @@ class ProgressSliderTest {
                         ProgressSlider(
                             0f,
                             {},
-                            Modifier.width(200.dp),
+                            Modifier.width(200.dp).onPointerEvent(
+                                PointerEventType.Release,
+                                PointerEventPass.Initial,
+                            ) { event ->
+                                if (consumeRelease) event.changes.forEach { it.consume() }
+                            },
                             onCommit = commit,
+                            commitOnPress = commitOnPress,
                             enabled = enabled,
                         )
                     }
