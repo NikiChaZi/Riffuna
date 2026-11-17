@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import riffuna.catalog.RecordingIdentity
 import riffuna.core.*
 
 /** A device-private library. Windows data is never read or overwritten. */
@@ -206,7 +207,45 @@ class AndroidLibrary(context: Context, name: String = "library.sqlite3") : Music
     }
 
     @Synchronized
-    override fun preferred(track: Track) = findTrack(setting("preferred:" + track.id, "")) ?: track
+    override fun preferred(track: Track) =
+        findTrack(
+            setting(
+                "preferred:" + track.id,
+                setting(
+                    RecordingIdentity.key(track),
+                    setting(RecordingIdentity.legacyKey(track), ""),
+                ),
+            )
+        ) ?: track
+
+    @Synchronized
+    override fun recordingChoices(): Map<String, Track> =
+        db.rawQuery(
+                "SELECT s.key,t.payload FROM settings s JOIN tracks t ON t.id=s.value " +
+                    "WHERE s.key LIKE 'recording:%' OR s.key LIKE 'preferred:%'",
+                null,
+            )
+            .use { rows ->
+                buildMap {
+                    while (rows.moveToNext()) put(
+                        rows.getString(0),
+                        Json.decodeFromString(rows.getString(1)),
+                    )
+                }
+            }
+
+    @Synchronized
+    override fun putRecordingChoice(key: String, track: Track) = transaction {
+        put(track)
+        setSetting(key, track.id)
+    }
+
+    @Synchronized override fun exportCollection(): String = CollectionTransfer.encode(this)
+
+    @Synchronized
+    override fun importCollection(snapshot: CollectionSnapshot): CollectionImport = transaction {
+        mergeCollection(this, snapshot)
+    }
 
     @Synchronized
     override fun setting(name: String, default: String): String =

@@ -37,6 +37,8 @@ interface AudioEngine {
 
     fun setVolume(volume: Float)
 
+    fun setLoudnessNormalization(enabled: Boolean) {}
+
     fun devices(): List<AudioDevice> = emptyList()
 
     fun selectDevice(id: String) {}
@@ -121,6 +123,15 @@ interface MusicLibrary {
     fun setPreferred(original: Track, replacement: Track?)
 
     fun preferred(track: Track): Track
+
+    fun recordingChoices(): Map<String, Track> = emptyMap()
+
+    fun putRecordingChoice(key: String, track: Track) {}
+
+    fun exportCollection(): String = CollectionTransfer.encode(this)
+
+    fun importCollection(snapshot: CollectionSnapshot): CollectionImport =
+        mergeCollection(this, snapshot)
 
     fun close()
 }

@@ -3,10 +3,45 @@ package riffuna.desktop
 import java.nio.file.Files
 import java.sql.DriverManager
 import kotlin.test.*
+import riffuna.core.CollectionImport
+import riffuna.core.CollectionTransfer
 import riffuna.core.Track
 
 class LibraryTest {
     private fun track(id: Char) = Track(id.toString().repeat(11), "Song $id", "Artist", 180)
+
+    @Test
+    fun collectionTransferPreservesPlaylistOrderAndRecordingChoiceWithoutDuplicatingImports() {
+        val directory = Files.createTempDirectory("riffuna-transfer-test")
+        val a = track('a')
+        val b = track('b')
+        val alternate = track('c')
+        val local = Track("local-secret-path", "Local file")
+        val encoded =
+            SqliteLibrary(directory.resolve("source.sqlite3")).let { library ->
+                try {
+                    val id = library.createPlaylist("Favorites")
+                    library.editPlaylist(id, "Favorites", "Test playlist")
+                    library.addToPlaylist(id, listOf(b, local, a))
+                    library.like(a, true)
+                    library.setPreferred(a, alternate)
+                    library.exportCollection()
+                } finally {
+                    library.close()
+                }
+            }
+        assertFalse("local-secret-path" in encoded)
+        SqliteLibrary(directory.resolve("destination.sqlite3")).useLibrary { destination ->
+            val snapshot = CollectionTransfer.decode(encoded)
+            assertEquals(CollectionImport(1, 1, 1), destination.importCollection(snapshot))
+            val playlist = destination.playlists().single()
+            assertEquals("Test playlist", playlist.description)
+            assertEquals(listOf(b, a), destination.playlistTracks(playlist.id))
+            assertEquals(a, destination.likes().single())
+            assertEquals(alternate, destination.preferred(a))
+            assertEquals(CollectionImport(0, 0, 0), destination.importCollection(snapshot))
+        }
+    }
 
     @Test
     fun legacyMigrationAndPersistencePreserveMusic() {

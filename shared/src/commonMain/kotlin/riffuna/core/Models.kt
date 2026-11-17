@@ -72,6 +72,7 @@ data class PlaybackUiState(
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val volume: Float = .65f,
+    val normalizeLoudness: Boolean = false,
 )
 
 data class QueueUiState(
@@ -360,6 +361,8 @@ interface RiffunaController {
 
     fun playAll()
 
+    fun playContext(tracks: List<Track>, index: Int = 0, exactRecordings: Boolean = false)
+
     fun removeFromQueue(id: String)
 
     fun moveInQueue(id: String, offset: Int)
@@ -385,6 +388,14 @@ interface RiffunaController {
     fun seek(positionMs: Long)
 
     fun setVolume(volume: Float)
+
+    fun setLoudnessNormalization(enabled: Boolean)
+
+    suspend fun exportCollection(): String
+
+    fun importCollection(text: String)
+
+    fun notifyUser(message: String)
 
     fun toggleLike(track: Track)
 

@@ -247,7 +247,10 @@ fun SettingsDialog(controller: RiffunaController, state: AppState, onDismiss: ()
         onDismissRequest = onDismiss,
         title = { Text("Настройки") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            Column(
+                Modifier.heightIn(max = 510.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Меньше движения", fontWeight = FontWeight.Medium)
@@ -259,6 +262,20 @@ fun SettingsDialog(controller: RiffunaController, state: AppState, onDismiss: ()
                     }
                     Switch(state.reducedMotion, controller::setReducedMotion)
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Нормализация громкости", fontWeight = FontWeight.Medium)
+                        Text(
+                            "Выравнивает громкость записей. Применяется со следующего трека.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(state.playback.normalizeLoudness, controller::setLoudnessNormalization)
+                }
+                HorizontalDivider()
+                CollectionSettings(controller)
+                HorizontalDivider()
+                WindowsUpdatesSettings()
                 HorizontalDivider()
                 Text("Устройство вывода", style = MaterialTheme.typography.titleSmall)
                 Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState())) {

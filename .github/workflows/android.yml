@@ -2,9 +2,8 @@ name: Android APK
 on:
   push:
     branches: [main]
-    paths: ['android/**', 'shared/src/**', 'source-runtime/**', 'scripts/build_android*', '.github/workflows/android.yml', 'gradle/**', 'gradlew*']
+    paths: ['android/**', 'shared/src/**', 'source-runtime/**', 'scripts/build_android*', 'scripts/check_*', '.github/workflows/android.yml', 'gradle/**', 'gradlew*']
   pull_request:
-    paths: ['android/**', 'shared/src/**', 'source-runtime/**', 'scripts/build_android*', '.github/workflows/android.yml']
   workflow_dispatch:
     inputs:
       release_tag:
@@ -20,10 +19,6 @@ jobs:
   apk:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    permissions:
-      contents: write
-    env:
-      HAS_SIGNING: ${{ secrets.RIFFUNA_ANDROID_KEYSTORE_B64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -35,6 +30,9 @@ jobs:
           node-version: '24.15.0'
           cache: npm
           cache-dependency-path: source-runtime/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: gradle/actions/setup-gradle@v4
       - name: Prepare Android SDK
         run: |
@@ -43,22 +41,26 @@ jobs:
         run: npm ci --prefix source-runtime --ignore-scripts
       - name: Build and check debug APK
         shell: pwsh
-        run: ./scripts/build_android.ps1 -DebugBuild
+        run: ./scripts/check_ci_output.ps1 AndroidDebug
       - name: Prepare release signing
-        if: env.HAS_SIGNING == 'true' && github.event_name != 'pull_request'
+        id: signing
+        if: github.event_name != 'pull_request'
         env:
           KEYSTORE_B64: ${{ secrets.RIFFUNA_ANDROID_KEYSTORE_B64 }}
         run: |
+          if [[ -z "$KEYSTORE_B64" ]]; then exit 0; fi
           umask 077
-          mkdir -p .tools/ci-signing
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > .tools/ci-signing/riffuna.jks
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/riffuna.jks"
+          echo 'available=true' >> "$GITHUB_OUTPUT"
       - name: Build signed release APK
-        if: env.HAS_SIGNING == 'true' && github.event_name != 'pull_request'
+        if: steps.signing.outputs.available == 'true'
         shell: pwsh
         env:
-          RIFFUNA_ANDROID_KEYSTORE: ${{ github.workspace }}/.tools/ci-signing/riffuna.jks
+          RIFFUNA_ANDROID_KEYSTORE: ${{ runner.temp }}/riffuna.jks
           RIFFUNA_ANDROID_KEY_PASSWORD: ${{ secrets.RIFFUNA_ANDROID_KEY_PASSWORD }}
-        run: ./scripts/build_android.ps1
+        run: ./scripts/check_ci_output.ps1 AndroidRelease
+      - name: Verify packages before upload
+        run: python scripts/check_release_payload.py dist/android
       - uses: actions/upload-artifact@v4
         with:
           name: Riffuna-Android
@@ -66,8 +68,29 @@ jobs:
             dist/android/*.apk
             dist/android/*.sha256
           if-no-files-found: error
+      - name: Remove temporary signing file
+        if: always() && github.event_name != 'pull_request'
+        run: rm -f "$RUNNER_TEMP/riffuna.jks"
+
+  publish-preview:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    needs: apk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: Riffuna-Android
+          path: dist/android
+      - name: Verify downloaded packages
+        run: python scripts/check_release_payload.py dist/android
       - name: Publish Android preview
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -79,6 +102,3 @@ jobs:
             exit 1
           fi
           gh release create "$RELEASE_TAG" dist/android/Riffuna-android.apk dist/android/Riffuna-android.apk.sha256 --target "$GITHUB_SHA" --prerelease --title "Riffuna $RELEASE_TAG — Android" --notes-file docs/releases/android-preview.md
-      - name: Remove temporary signing file
-        if: always()
-        run: rm -f .tools/ci-signing/riffuna.jks

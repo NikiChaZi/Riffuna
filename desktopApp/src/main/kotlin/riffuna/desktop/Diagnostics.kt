@@ -11,7 +11,7 @@ object Diagnostics {
     fun run(home: Path, report: Path, live: Boolean = false): Int = runBlocking {
         val data = Files.createTempDirectory("riffuna-package-check")
         val result = buildJsonObject {
-            put("app_version", "0.3.0")
+            put("app_version", WindowsReleaseUpdater(home).version)
             put("headless", true)
             put("test_library", true)
             put("live_network_requested", live)

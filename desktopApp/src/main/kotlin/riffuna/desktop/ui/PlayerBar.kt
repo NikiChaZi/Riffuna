@@ -26,6 +26,7 @@ fun PlayerBar(
     screenState: AppState,
     coverModifier: Modifier = Modifier,
     showCover: Boolean = true,
+    onArtist: ((Track) -> Unit)? = null,
 ) {
     val playbackFlow =
         remember(controller) { controller.state.map { it.playback }.distinctUntilChanged() }
@@ -56,24 +57,21 @@ fun PlayerBar(
                             state.current?.title,
                             8.dp,
                         )
-                    Column(
-                        Modifier.weight(1f).clickable(enabled = state.current != null) {
-                            controller.openNowPlaying(true)
-                        },
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(
                             state.current?.title ?: "Выбери свою музыку",
+                            Modifier.clickable(enabled = state.current != null) {
+                                controller.openNowPlaying(true)
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        Text(
-                            state.current?.artist ?: "Поиск, лайки и твои плейлисты",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = RiffunaColors.Secondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                        PlayerArtistName(
+                            state.current,
+                            onArtist,
+                            MaterialTheme.typography.labelMedium,
+                            emptyLabel = "Поиск, лайки и твои плейлисты",
                         )
                         if (state.playbackError != null)
                             Text(

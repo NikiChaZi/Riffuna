@@ -1,7 +1,9 @@
 param([switch]$Launch)
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $PSScriptRoot
-$taskPackage=Join-Path $taskRoot 'dist\Riffuna-0.3.0'
+$taskVersion = [regex]::Match((Get-Content -Raw -LiteralPath (Join-Path $taskRoot 'gradle.properties')), '(?m)^riffunaWindowsVersion=(\d+\.\d+\.\d+)\r?$').Groups[1].Value
+if (-not $taskVersion) { throw 'riffunaWindowsVersion is missing from gradle.properties.' }
+$taskPackage=Join-Path $taskRoot "dist\Riffuna-$taskVersion"
 $taskSource=Join-Path $taskPackage 'Riffuna.runtime'
 $taskRuntime=Join-Path $taskRoot 'Riffuna.runtime'
 $taskTemporary=Join-Path $taskRoot 'Riffuna.runtime.next'

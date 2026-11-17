@@ -11,9 +11,19 @@ import kotlinx.serialization.json.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import riffuna.catalog.mayQueryOnlineLyrics
 import riffuna.core.*
 
-internal class AndroidLyrics(private val http: OkHttpClient, private val library: AndroidLibrary) {
+internal class AndroidLyrics(
+    private val http: OkHttpClient,
+    private val readCache: (String) -> String,
+    private val writeCache: (String, String) -> Unit,
+) {
+    constructor(
+        http: OkHttpClient,
+        library: AndroidLibrary,
+    ) : this(http, { library.setting(it, "") }, library::setSetting)
+
     companion object {
         internal fun normalized(value: String): String =
             Normalizer.normalize(value, Normalizer.Form.NFKC)
@@ -90,9 +100,10 @@ internal class AndroidLyrics(private val http: OkHttpClient, private val library
 
     suspend fun load(track: Track, force: Boolean): LyricsPacket =
         withContext(Dispatchers.IO) {
+            if (!track.mayQueryOnlineLyrics()) return@withContext LyricsPacket()
             val key = cacheKey(track)
             if (!force)
-                runCatching { Json.decodeFromString<LyricsPacket>(library.setting(key, "")) }
+                runCatching { Json.decodeFromString<LyricsPacket>(readCache(key)) }
                     .getOrNull()
                     ?.let {
                         return@withContext it
@@ -130,8 +141,7 @@ internal class AndroidLyrics(private val http: OkHttpClient, private val library
                 val packet =
                     row?.let(::packet)
                         ?: LyricsPacket(message = "Подходящий текст для этой записи не найден")
-                if (packet.state != "not_found")
-                    library.setSetting(key, Json.encodeToString(packet))
+                if (packet.state != "not_found") writeCache(key, Json.encodeToString(packet))
                 packet
             } catch (e: CancellationException) {
                 throw e
@@ -175,14 +185,15 @@ internal class AndroidLyrics(private val http: OkHttpClient, private val library
     suspend fun enrich(track: Track, base: LyricsPacket): LyricsPacket =
         withContext(Dispatchers.IO) {
             if (
-                base.state != "synced" ||
+                !track.mayQueryOnlineLyrics() ||
+                    base.state != "synced" ||
                     base.lines.any { it.words.isNotEmpty() } ||
                     base.source == "local" ||
                     AndroidRecordingRules.profile(track.title).isNotEmpty()
             )
                 return@withContext base
             val key = cacheKey(track) + ":words"
-            runCatching { Json.decodeFromString<LyricsPacket>(library.setting(key, "")) }
+            runCatching { Json.decodeFromString<LyricsPacket>(readCache(key)) }
                 .getOrNull()
                 ?.let { if (compatible(track, base, it.lines)) return@withContext it }
             for ((endpoint, field) in listOf("/getLyrics" to "ttml", "/qq/getLyrics" to "lyrics")) {
@@ -212,7 +223,7 @@ internal class AndroidLyrics(private val http: OkHttpClient, private val library
                                 timingSource = "provider_words",
                                 approximateWords = false,
                             )
-                        library.setSetting(key, Json.encodeToString(enriched))
+                        writeCache(key, Json.encodeToString(enriched))
                         return@withContext enriched
                     }
                 } catch (e: CancellationException) {

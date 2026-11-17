@@ -58,6 +58,8 @@ class MpvAudio(path: Path, private val audioDriver: String? = null) : AudioEngin
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var closed = false
     private var loaded = false
+    private var normalizeLoudness = false
+    private var normalizationApplied = false
     private var fileReady = false
     private var outputRevision = 0L
 
@@ -183,6 +185,11 @@ class MpvAudio(path: Path, private val audioDriver: String? = null) : AudioEngin
                 },
             )
             property("http-proxy", source.proxy)
+            if (normalizationApplied != normalizeLoudness) {
+                val filters = if (normalizeLoudness) "lavfi=[loudnorm=I=-16:TP=-1.5:LRA=11]" else ""
+                property("af", filters)
+                normalizationApplied = normalizeLoudness
+            }
             command("loadfile", source.uri, "replace")
             property("pause", if (source.autoPlay) "no" else "yes")
             loaded = true
@@ -213,6 +220,11 @@ class MpvAudio(path: Path, private val audioDriver: String? = null) : AudioEngin
     @Synchronized
     override fun setVolume(volume: Float) {
         if (!closed) property("volume", (volume.coerceIn(0f, 1f) * 100).toString())
+    }
+
+    @Synchronized
+    override fun setLoudnessNormalization(enabled: Boolean) {
+        normalizeLoudness = enabled
     }
 
     @Synchronized

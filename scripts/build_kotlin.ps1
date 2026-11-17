@@ -3,11 +3,13 @@ $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $PSScriptRoot
 Push-Location $taskRoot
 try {
+    $taskVersion = [regex]::Match((Get-Content -Raw -LiteralPath gradle.properties), '(?m)^riffunaWindowsVersion=(\d+\.\d+\.\d+)\r?$').Groups[1].Value
+    if (-not $taskVersion) { throw 'riffunaWindowsVersion is missing from gradle.properties.' }
     $taskLocal=Join-Path $taskRoot '.test-data\kotlin-toolchain.json'
     if(Test-Path -LiteralPath $taskLocal){
         $taskToolchain=Get-Content -LiteralPath $taskLocal -Raw|ConvertFrom-Json
         $env:JAVA_HOME=$taskToolchain.jdk
-        $env:GRADLE_USER_HOME=Join-Path $taskRoot '.tools\gradle-cache'
+        if (-not $env:GRADLE_USER_HOME) { $env:GRADLE_USER_HOME=Join-Path $taskRoot '.tools\gradle-cache' }
         $taskGradle=Join-Path $taskToolchain.gradle 'bin\gradle.bat'
     }else{
         if(-not $env:JAVA_HOME){throw 'Set JAVA_HOME to a JDK 21 installation.'}
@@ -32,6 +34,7 @@ try {
         Remove-Item -LiteralPath $taskResolved -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $taskResources 'assets'),(Join-Path $taskResources 'vendor\node'),(Join-Path $taskResources 'vendor\libmpv'),(Join-Path $taskResources 'source-runtime'),(Join-Path $taskResources 'LICENSES')|Out-Null
+    & (Join-Path $PSScriptRoot 'build_windows_helper.ps1') -OutputDirectory (Join-Path $taskResources 'vendor\windows') -Version $taskVersion
     Copy-Item -Path assets/riffuna.* -Destination (Join-Path $taskResources 'assets') -Force
     Copy-Item -LiteralPath $taskNode -Destination (Join-Path $taskResources 'vendor\node\node.exe') -Force
     Copy-Item -Path source-runtime/index.mjs,source-runtime/attestation.mjs,source-runtime/attestation-core.mjs,source-runtime/package.json,source-runtime/package-lock.json,source-runtime/node_modules -Destination (Join-Path $taskResources 'source-runtime') -Recurse -Force
@@ -58,7 +61,7 @@ try {
         & $taskGradle spotlessCheck :shared:jvmTest :desktopApp:test :desktopApp:createDistributable :desktopApp:packageExe --no-daemon --console=plain
         if($LASTEXITCODE -ne 0){throw 'Kotlin build failed.'}
     }finally{$env:RIFFUNA_LIVE_TEST=$taskPreviousLive}
-    $taskOutput=Join-Path $taskRoot 'dist\Riffuna-0.3.0'
+    $taskOutput=Join-Path $taskRoot ("dist\Riffuna-$taskVersion")
     $taskRuntime=Join-Path $taskOutput 'Riffuna.runtime'
     $taskRunning=Get-Process Riffuna -ErrorAction SilentlyContinue|Where-Object{$_.Path -and $_.Path.StartsWith($taskOutput,[StringComparison]::OrdinalIgnoreCase)}
     if($taskRunning){throw 'Close the packaged Riffuna before updating its files.'}
@@ -71,11 +74,22 @@ try {
     New-Item -ItemType Directory -Force -Path $taskRuntime|Out-Null
     Copy-Item -Path (Join-Path $taskImage '*') -Destination $taskRuntime -Recurse -Force
     $taskCompiler=Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-    & $taskCompiler /nologo /target:winexe /platform:x64 /optimize+ ("/win32icon:"+(Join-Path $taskRoot 'assets\riffuna.ico')) ("/out:"+(Join-Path $taskOutput 'Riffuna.exe')) /reference:System.Windows.Forms.dll (Join-Path $taskRoot "desktopApp\windows\Launcher.cs")
+    $taskLauncherVersion=Join-Path $taskRoot 'build\windows-launcher-version.cs'
+    @(
+        "[assembly: System.Reflection.AssemblyVersion(""$taskVersion.0"")]",
+        "[assembly: System.Reflection.AssemblyFileVersion(""$taskVersion.0"")]"
+    ) | Set-Content -LiteralPath $taskLauncherVersion -Encoding ascii
+    & $taskCompiler /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 ("/win32icon:"+(Join-Path $taskRoot 'assets\riffuna.ico')) ("/out:"+(Join-Path $taskOutput 'Riffuna.exe')) /reference:System.Windows.Forms.dll (Join-Path $taskRoot "desktopApp\windows\Launcher.cs") $taskLauncherVersion
     if($LASTEXITCODE -ne 0){throw 'Launcher build failed.'}
     Copy-Item -LiteralPath LICENSE,LICENSING.md,THIRD_PARTY_NOTICES.md -Destination $taskOutput -Force
     $taskForbidden=Get-ChildItem -LiteralPath $taskRuntime -Recurse -File|Where-Object{$_.Name -match '^(python.*\.dll|RiffunaSource\.exe|Qt[56].*\.dll)$' -or $_.Extension -in '.pyc','.pyo'}
     if($taskForbidden){throw 'Legacy Python/Qt files entered the package.'}
+    $taskInstaller=Join-Path $taskRoot ("desktopApp\build\compose\binaries\main\exe\Riffuna-$taskVersion.exe")
+    $taskWixDark=Join-Path $taskRoot 'build\wix311\dark.exe'
+    & python scripts/check_release_payload.py $taskOutput
+    if($LASTEXITCODE -ne 0){throw 'Portable Windows package privacy check failed.'}
+    & python scripts/check_release_payload.py --installer --dark $taskWixDark $taskInstaller
+    if($LASTEXITCODE -ne 0){throw 'Windows installer privacy check failed.'}
     $taskDiagnosticReport=Join-Path $taskRoot '.test-data\native-package-report.json'
     if(Test-Path -LiteralPath $taskDiagnosticReport){Remove-Item -LiteralPath $taskDiagnosticReport -Force}
     $taskDiagnostic=Start-Process -FilePath (Join-Path $taskRuntime 'Riffuna.exe') -ArgumentList @('--diagnose','--report',('"'+$taskDiagnosticReport+'"')) -WindowStyle Hidden -PassThru
@@ -85,6 +99,6 @@ try {
     if($taskReport.status -ne 'ok' -or $taskReport.python_runtime -ne $false -or $taskReport.qt_runtime -ne $false){throw 'Unexpected packaged runtime report.'}
     $taskApplicationJar=Get-ChildItem -LiteralPath (Join-Path $taskRuntime 'app') -Filter 'desktopApp-*.jar' -File|Select-Object -First 1
     if(-not $taskApplicationJar){throw 'Application JAR is missing.'}
-    @{version='0.3.0';application_jar=$taskApplicationJar.Name;application_sha256=(Get-FileHash -LiteralPath $taskApplicationJar.FullName -Algorithm SHA256).Hash.ToLowerInvariant();launcher_sha256=(Get-FileHash -LiteralPath (Join-Path $taskOutput 'Riffuna.exe') -Algorithm SHA256).Hash.ToLowerInvariant();source_lock_sha256=$taskLockHash.ToLowerInvariant();source_sha256=(Get-FileHash -LiteralPath source-runtime/index.mjs -Algorithm SHA256).Hash.ToLowerInvariant();diagnostics='passed';live_source_test=$(if($LiveTest){'passed'}else{'not_run'});built_at_utc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $taskOutput 'BUILD-MANIFEST.json') -Encoding utf8
+    @{version=$taskVersion;application_jar=$taskApplicationJar.Name;application_sha256=(Get-FileHash -LiteralPath $taskApplicationJar.FullName -Algorithm SHA256).Hash.ToLowerInvariant();launcher_sha256=(Get-FileHash -LiteralPath (Join-Path $taskOutput 'Riffuna.exe') -Algorithm SHA256).Hash.ToLowerInvariant();source_lock_sha256=$taskLockHash.ToLowerInvariant();source_sha256=(Get-FileHash -LiteralPath source-runtime/index.mjs -Algorithm SHA256).Hash.ToLowerInvariant();diagnostics='passed';live_source_test=$(if($LiveTest){'passed'}else{'not_run'});built_at_utc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $taskOutput 'BUILD-MANIFEST.json') -Encoding utf8
     Write-Host "Ready: $taskOutput\Riffuna.exe"
 }finally{Pop-Location}

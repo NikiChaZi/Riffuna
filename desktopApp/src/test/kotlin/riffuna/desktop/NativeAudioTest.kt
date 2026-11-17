@@ -49,6 +49,11 @@ class NativeAudioTest {
             audio.resume()
             withTimeout(4000) { while (audio.state.value.positionMs < 2800) delay(50) }
             assertTrue(audio.state.value.playing)
+            audio.setLoudnessNormalization(true)
+            audio.open(AudioSource(file.toUri().toString()))
+            withTimeout(8000) { while (audio.state.value.positionMs < 200) delay(50) }
+            assertNull(audio.state.value.error)
+            audio.setLoudnessNormalization(false)
             audio.open(
                 AudioSource(
                     file.resolveSibling("missing-audio-${System.nanoTime()}.m4a").toUri().toString()

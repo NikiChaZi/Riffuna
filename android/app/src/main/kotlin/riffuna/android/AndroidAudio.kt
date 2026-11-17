@@ -85,7 +85,7 @@ class AndroidAudio(
                 override fun onPlayerError(error: PlaybackException) {
                     android.util.Log.w(
                         "RiffunaAudio",
-                        "code=${error.errorCodeName} cause=${error.cause?.javaClass?.simpleName.orEmpty()}",
+                        audioFailureLog(error.errorCode, error.cause),
                     )
                     if (recoverNetworkError(error, player.playWhenReady)) return
                     failure =
@@ -272,6 +272,14 @@ class AndroidAudio(
 }
 
 class RiffunaApplication : Application() {
+    @androidx.annotation.OptIn(UnstableApi::class)
+    override fun onCreate() {
+        super.onCreate()
+        // Media3 errors may attach DataSource exceptions with paths or signed URLs.
+        // App-owned playback diagnostics still record the error code and cause class.
+        androidx.media3.common.util.Log.setLogLevel(androidx.media3.common.util.Log.LOG_LEVEL_OFF)
+    }
+
     private val defaultGraph: AppGraph by lazy { AppGraph(this) }
     internal var testGraph: AppGraph? = null
     val graph: AppGraph

@@ -6,10 +6,15 @@ import java.security.MessageDigest
 import javax.xml.parsers.DocumentBuilderFactory
 import kotlinx.serialization.json.*
 import org.w3c.dom.Element
+import riffuna.catalog.mayQueryOnlineLyrics
+import riffuna.catalog.validLyricsFileId
 import riffuna.core.*
 
 /** Recording-specific LRC/TTML and LRCLIB; no Python and no guessed audio clocks. */
-class LyricsRepository(private val directory: Path) {
+class LyricsRepository(
+    private val directory: Path,
+    private val openConnection: (String) -> java.net.HttpURLConnection = { DesktopNetwork.open(it) },
+) {
     private val max = 1_048_576
 
     private fun parsePacket(row: JsonObject) =
@@ -86,10 +91,13 @@ class LyricsRepository(private val directory: Path) {
     }
 
     fun load(track: Track, force: Boolean = false): LyricsPacket {
+        if (!track.validLyricsFileId()) return LyricsPacket()
         for (extension in listOf("ttml", "lrc")) {
             val local = directory.resolve("${track.id}.$extension")
             if (Files.isRegularFile(local)) return imported(Files.readString(local), extension)
         }
+        if (!track.mayQueryOnlineLyrics())
+            return LyricsPacket(message = "Для локальной записи можно открыть LRC или TTML")
         val file = directory.resolve("${track.id}.json")
         val now = System.currentTimeMillis() / 1000
         val saved =
@@ -144,6 +152,7 @@ class LyricsRepository(private val directory: Path) {
     }
 
     fun import(track: Track, text: String, format: String): LyricsPacket {
+        require(track.validLyricsFileId())
         val extension = if (format.lowercase() in setOf("xml", "ttml")) "ttml" else "lrc"
         val value = imported(text, extension)
         Files.createDirectories(directory)
@@ -179,8 +188,9 @@ class LyricsRepository(private val directory: Path) {
                 }
         val wordsProvider = endpoint.contains("betterlyrics.org")
         repeat(if (wordsProvider) 1 else 2) { attempt ->
-            val connection = DesktopNetwork.open(url)
+            val connection = openConnection(url)
             try {
+                connection.instanceFollowRedirects = false
                 if (wordsProvider) {
                     connection.connectTimeout = 2000
                     connection.readTimeout = 3500
@@ -454,6 +464,7 @@ class LyricsRepository(private val directory: Path) {
     }
 
     fun enrich(track: Track, base: LyricsPacket): LyricsPacket {
+        if (!track.mayQueryOnlineLyrics()) return base
         if (
             base.state != "synced" ||
                 base.lines.any { it.words.isNotEmpty() } ||

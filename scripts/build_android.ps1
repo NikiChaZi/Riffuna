@@ -60,6 +60,8 @@ try {
     $taskDestination = Join-Path $taskRoot 'dist/android'
     New-Item -ItemType Directory -Force -Path $taskDestination | Out-Null
     $taskName = if ($DebugBuild) { 'Riffuna-android-debug.apk' } else { 'Riffuna-android.apk' }
+    & python scripts/check_release_payload.py $taskApk
+    if ($LASTEXITCODE -ne 0) { throw 'Android package privacy check failed.' }
     Copy-Item -LiteralPath $taskApk -Destination (Join-Path $taskDestination $taskName) -Force
     $taskHash = (Get-FileHash -LiteralPath (Join-Path $taskDestination $taskName) -Algorithm SHA256).Hash.ToLowerInvariant()
     "$taskHash  $taskName" | Set-Content -LiteralPath (Join-Path $taskDestination ($taskName + '.sha256')) -Encoding ascii

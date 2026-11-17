@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import riffuna.core.*
+import riffuna.desktop.DesktopCatalogSource
 
 @Composable
 fun RiffunaApp(
@@ -31,12 +32,58 @@ fun RiffunaApp(
     onOpen: (Track) -> Unit,
     onImport: () -> Unit,
     onImportMusic: () -> Unit = {},
+    catalogSource: DesktopCatalogSource? = null,
 ) {
     val screenFlow =
         remember(controller) { controller.state.map { it.screenSnapshot() }.distinctUntilChanged() }
     val state by screenFlow.collectAsState(initial = controller.state.value.screenSnapshot())
     var query by remember { mutableStateOf(state.query) }
     LaunchedEffect(state.query) { query = state.query }
+    val catalogNavigation = remember { CatalogNavigation() }
+    var artistLookupTrack by remember { mutableStateOf<Track?>(null) }
+    val openTrackArtist: ((Track) -> Unit)? =
+        catalogSource?.let { { track -> artistLookupTrack = track } }
+    val offline = LocalOfflineDownloads.current
+    var downloadsOpen by remember { mutableStateOf(false) }
+    var downloadsForward by remember { mutableStateOf(false) }
+    LaunchedEffect(state.view, state.query) { catalogNavigation.reset() }
+    fun openDownloads() {
+        catalogNavigation.reset()
+        downloadsOpen = true
+        downloadsForward = false
+    }
+    fun closeDownloads() {
+        downloadsOpen = false
+        downloadsForward = false
+    }
+    fun submitSearch() {
+        closeDownloads()
+        catalogNavigation.reset()
+        controller.search(query)
+    }
+    fun navigateBack() {
+        when {
+            catalogNavigation.canGoBack -> catalogNavigation.goBack()
+            downloadsOpen -> {
+                downloadsOpen = false
+                downloadsForward = true
+            }
+            else -> {
+                downloadsForward = false
+                controller.navigateBack()
+            }
+        }
+    }
+    fun navigateForward() {
+        when {
+            catalogNavigation.canGoForward -> catalogNavigation.goForward()
+            downloadsForward -> {
+                downloadsOpen = true
+                downloadsForward = false
+            }
+            !downloadsOpen -> controller.navigateForward()
+        }
+    }
     var typing by remember { mutableStateOf(false) }
     var queueFocus by remember { mutableStateOf(false) }
     val globalFocus = remember { FocusRequester() }
@@ -92,7 +139,7 @@ fun RiffunaApp(
                             true
                         }
                         event.isCtrlPressed && event.key == Key.A -> {
-                            if (!queueFocus) {
+                            if (!queueFocus && !downloadsOpen) {
                                 controller.selectAll()
                                 true
                             } else false
@@ -106,15 +153,16 @@ fun RiffunaApp(
                             true
                         }
                         event.isAltPressed && event.key == Key.DirectionLeft -> {
-                            controller.navigateBack()
+                            navigateBack()
                             true
                         }
                         event.isAltPressed && event.key == Key.DirectionRight -> {
-                            controller.navigateForward()
+                            navigateForward()
                             true
                         }
                         event.isAltPressed &&
                             !queueFocus &&
+                            !downloadsOpen &&
                             state.view == LibraryView.PLAYLIST &&
                             state.selectedIds.isNotEmpty() &&
                             event.key in setOf(Key.DirectionUp, Key.DirectionDown) -> {
@@ -136,7 +184,7 @@ fun RiffunaApp(
                             true
                         }
                         event.key == Key.Delete -> {
-                            if (!queueFocus && state.selectedIds.isNotEmpty()) {
+                            if (!queueFocus && !downloadsOpen && state.selectedIds.isNotEmpty()) {
                                 controller.removeSelected()
                                 true
                             } else false
@@ -152,6 +200,7 @@ fun RiffunaApp(
                         }
                         event.key == Key.Escape -> {
                             if (state.expanded) controller.openNowPlaying(false)
+                            else if (catalogNavigation.canGoBack) catalogNavigation.goBack()
                             else controller.clearSelection()
                             true
                         }
@@ -180,7 +229,14 @@ fun RiffunaApp(
                                 },
                             )
                         if (expanded)
-                            ExpandedPlayer(controller, state, cover, onImport, showPlaylist)
+                            ExpandedPlayer(
+                                controller,
+                                state,
+                                cover,
+                                onImport,
+                                showPlaylist,
+                                openTrackArtist,
+                            )
                         else
                             Column(Modifier.fillMaxSize()) {
                                 Row(Modifier.weight(1f)) {
@@ -194,6 +250,13 @@ fun RiffunaApp(
                                         },
                                         { help = true },
                                         onImportMusic,
+                                        onOpenDownloads =
+                                            if (offline == null) null else ::openDownloads,
+                                        downloadsSelected = downloadsOpen,
+                                        onLibraryNavigation = {
+                                            catalogNavigation.reset()
+                                            closeDownloads()
+                                        },
                                     )
                                     Column(Modifier.weight(1f).fillMaxHeight()) {
                                         Row(
@@ -205,15 +268,22 @@ fun RiffunaApp(
                                             ActionIcon(
                                                 Icons.Outlined.ArrowBack,
                                                 "Назад · Alt + ←",
-                                                controller::navigateBack,
-                                                enabled = state.canGoBack,
+                                                ::navigateBack,
+                                                enabled =
+                                                    downloadsOpen ||
+                                                        catalogNavigation.canGoBack ||
+                                                        state.canGoBack,
                                                 size = 30.dp,
                                             )
                                             ActionIcon(
                                                 Icons.Outlined.ArrowForward,
                                                 "Вперёд · Alt + →",
-                                                controller::navigateForward,
-                                                enabled = state.canGoForward,
+                                                ::navigateForward,
+                                                enabled =
+                                                    downloadsForward ||
+                                                        (!downloadsOpen &&
+                                                            (catalogNavigation.canGoForward ||
+                                                                state.canGoForward)),
                                                 size = 30.dp,
                                             )
                                             SearchField(
@@ -223,10 +293,10 @@ fun RiffunaApp(
                                                 Modifier.weight(1f),
                                                 globalFocus,
                                                 { typing = it },
-                                                { controller.search(query) },
+                                                ::submitSearch,
                                             )
                                             Button(
-                                                onClick = { controller.search(query) },
+                                                onClick = ::submitSearch,
                                                 shape = RoundedCornerShape(12.dp),
                                                 contentPadding =
                                                     PaddingValues(
@@ -254,45 +324,64 @@ fun RiffunaApp(
                                                 .padding(horizontal = 28.dp)
                                                 .graphicsLayer { this.alpha = alpha.value }
                                         ) {
-                                            when (state.view) {
-                                                LibraryView.HOME ->
-                                                    HomeScreen(
-                                                        controller,
-                                                        state,
-                                                        showPlaylist,
-                                                        {
-                                                            controller.showView(LibraryView.SEARCH)
-                                                            globalFocus.requestFocus()
-                                                        },
-                                                        Modifier.fillMaxSize(),
-                                                    )
-                                                LibraryView.PLAYLISTS ->
-                                                    PlaylistsScreen(
-                                                        controller,
-                                                        state,
-                                                        { create() },
-                                                        ::edit,
-                                                    )
-                                                LibraryView.RESONANCE ->
-                                                    ResonanceScreen(controller, state)
-                                                else ->
-                                                    TracksScreen(
-                                                        controller,
-                                                        state,
-                                                        listState,
-                                                        showPlaylist,
-                                                        {
-                                                            state.playlists
-                                                                .firstOrNull {
-                                                                    it.id == state.playlistId
-                                                                }
-                                                                ?.let(::edit)
-                                                        },
-                                                        onOpen,
-                                                        filterFocus,
-                                                        { typing = it },
-                                                    )
-                                            }
+                                            if (
+                                                catalogNavigation.current == null &&
+                                                    downloadsOpen &&
+                                                    offline != null
+                                            ) {
+                                                OfflineDownloadsScreen(offline, controller)
+                                            } else
+                                                CatalogHost(
+                                                    catalogSource,
+                                                    catalogNavigation,
+                                                    controller,
+                                                    state,
+                                                    showPlaylist,
+                                                    onOpen,
+                                                ) {
+                                                    when (state.view) {
+                                                        LibraryView.HOME ->
+                                                            HomeScreen(
+                                                                controller,
+                                                                state,
+                                                                showPlaylist,
+                                                                {
+                                                                    controller.showView(
+                                                                        LibraryView.SEARCH
+                                                                    )
+                                                                    globalFocus.requestFocus()
+                                                                },
+                                                                Modifier.fillMaxSize(),
+                                                            )
+                                                        LibraryView.PLAYLISTS ->
+                                                            PlaylistsScreen(
+                                                                controller,
+                                                                state,
+                                                                { create() },
+                                                                ::edit,
+                                                            )
+                                                        LibraryView.RESONANCE ->
+                                                            ResonanceScreen(controller, state)
+                                                        else ->
+                                                            TracksScreen(
+                                                                controller,
+                                                                state,
+                                                                listState,
+                                                                showPlaylist,
+                                                                {
+                                                                    state.playlists
+                                                                        .firstOrNull {
+                                                                            it.id ==
+                                                                                state.playlistId
+                                                                        }
+                                                                        ?.let(::edit)
+                                                                },
+                                                                onOpen,
+                                                                filterFocus,
+                                                                { typing = it },
+                                                            )
+                                                    }
+                                                }
                                         }
                                     }
                                     AnimatedVisibility(
@@ -315,7 +404,7 @@ fun RiffunaApp(
                                         )
                                     }
                                 }
-                                PlayerBar(controller, state, cover)
+                                PlayerBar(controller, state, cover, onArtist = openTrackArtist)
                             }
                     }
                 }
@@ -342,6 +431,15 @@ fun RiffunaApp(
                         )
                     }
                 }
+            }
+        }
+        val selectedTrack = artistLookupTrack
+        if (catalogSource != null && selectedTrack != null) {
+            TrackArtistDialog(catalogSource, selectedTrack, { artistLookupTrack = null }) { artist
+                ->
+                artistLookupTrack = null
+                catalogNavigation.open(artist, ArtistSection.SONGS)
+                controller.openNowPlaying(false)
             }
         }
         if (editor)
