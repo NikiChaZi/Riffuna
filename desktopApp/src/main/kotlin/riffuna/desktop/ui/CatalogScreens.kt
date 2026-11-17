@@ -13,18 +13,22 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import riffuna.core.AppState
 import riffuna.core.LibraryView
 import riffuna.core.RiffunaController
 import riffuna.core.Track
 import riffuna.core.isCurrentTrack
+import riffuna.desktop.ArtistTracksPage
 import riffuna.desktop.CatalogEntry
 import riffuna.desktop.CatalogKind
 import riffuna.desktop.CatalogPage
 import riffuna.desktop.DesktopCatalogSource
+import riffuna.desktop.findTrackArtists
 
 internal enum class CatalogSearchTab(val label: String, val kind: CatalogKind? = null) {
     TRACKS("Треки"),
@@ -32,25 +36,69 @@ internal enum class CatalogSearchTab(val label: String, val kind: CatalogKind? =
     RELEASES("Альбомы и синглы", CatalogKind.ALBUM),
 }
 
+@Composable
+internal fun PlayerArtistName(
+    track: Track?,
+    onArtist: ((Track) -> Unit)?,
+    textStyle: TextStyle,
+    emptyLabel: String = "",
+) {
+    val canOpen = track != null && track.artist.isNotBlank() && onArtist != null
+    Text(
+        track?.artist ?: emptyLabel,
+        if (canOpen)
+            Modifier.clickable(onClickLabel = "Открыть треки исполнителя") {
+                if (track != null) onArtist?.invoke(track)
+            }
+        else Modifier,
+        style = textStyle,
+        color = if (canOpen) RiffunaColors.Coral else RiffunaColors.Secondary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+internal enum class ArtistSection(val label: String) {
+    OVERVIEW("Обзор"),
+    SONGS("Треки"),
+    ALBUMS("Альбомы"),
+    SINGLES("Синглы и EP"),
+}
+
+internal data class CatalogDestination(
+    val entry: CatalogEntry,
+    val section: ArtistSection = ArtistSection.OVERVIEW,
+)
+
 internal class CatalogNavigation {
     var tab by mutableStateOf(CatalogSearchTab.TRACKS)
         private set
 
-    var current by mutableStateOf<CatalogEntry?>(null)
+    var current by mutableStateOf<CatalogDestination?>(null)
         private set
 
-    private val back = mutableStateListOf<CatalogEntry?>()
-    private val forward = mutableStateListOf<CatalogEntry?>()
+    private val back = mutableStateListOf<CatalogDestination?>()
+    private val forward = mutableStateListOf<CatalogDestination?>()
+    private val songs = mutableStateMapOf<String, ArtistTracksPage>()
+
+    fun songsFor(entry: CatalogEntry) = songs[entry.id]
+
+    fun saveSongs(entry: CatalogEntry, page: ArtistTracksPage) {
+        if (entry.id !in songs && songs.size >= 8) songs.keys.firstOrNull()?.let(songs::remove)
+        songs[entry.id] = page
+    }
+
     val canGoBack: Boolean
         get() = back.isNotEmpty()
 
     val canGoForward: Boolean
         get() = forward.isNotEmpty()
 
-    fun open(entry: CatalogEntry) {
-        if (current?.id == entry.id) return
+    fun open(entry: CatalogEntry, section: ArtistSection = ArtistSection.OVERVIEW) {
+        val destination = CatalogDestination(entry, section)
+        if (current?.entry?.id == entry.id && current?.section == section) return
         back.add(current)
-        current = entry
+        current = destination
         forward.clear()
     }
 
@@ -90,6 +138,19 @@ internal fun CatalogHost(
     onOpenTrack: (Track) -> Unit,
     fallback: @Composable () -> Unit,
 ) {
+    val destination = navigation.current
+    if (source != null && destination != null) {
+        CatalogPageScreen(
+            source,
+            destination,
+            navigation,
+            controller,
+            state,
+            onPlaylist,
+            onOpenTrack,
+        )
+        return
+    }
     if (
         source == null ||
             state.view != LibraryView.SEARCH ||
@@ -99,25 +160,12 @@ internal fun CatalogHost(
         fallback()
         return
     }
-    val entry = navigation.current
-    if (entry != null) {
-        CatalogPageScreen(
-            source,
-            entry,
-            controller,
-            state,
-            navigation::open,
-            onPlaylist,
-            onOpenTrack,
-        )
-        return
-    }
     Column(Modifier.fillMaxSize()) {
         CatalogSearchTabs(navigation.tab, navigation::selectTab)
         Box(Modifier.weight(1f)) {
             val kind = navigation.tab.kind
             if (kind == null) fallback()
-            else CatalogResults(source, state.query, kind, navigation::open)
+            else CatalogResults(source, state.query, kind) { navigation.open(it) }
         }
     }
 }
@@ -235,28 +283,174 @@ private fun CatalogEntryRow(entry: CatalogEntry, onOpen: () -> Unit) {
 @Composable
 internal fun CatalogPageScreen(
     source: DesktopCatalogSource,
-    entry: CatalogEntry,
+    destination: CatalogDestination,
+    navigation: CatalogNavigation,
     controller: RiffunaController,
     state: AppState,
-    onCatalogOpen: (CatalogEntry) -> Unit,
     onPlaylist: (List<Track>) -> Unit,
     onOpenTrack: (Track) -> Unit,
 ) {
-    key(entry.id) {
-        CatalogLoad({ source.catalogPage(entry) }) { page ->
-            CatalogPageContent(page, controller, state, onCatalogOpen, onPlaylist, onOpenTrack)
+    val (entry, section) = destination
+    Column(Modifier.fillMaxSize()) {
+        if (entry.kind == CatalogKind.ARTIST) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ArtistSection.entries.forEach { tab ->
+                    FilterChip(
+                        selected = section == tab,
+                        onClick = { navigation.open(entry, tab) },
+                        label = { Text(tab.label) },
+                    )
+                }
+            }
+        }
+        Box(Modifier.weight(1f)) {
+            key(entry.id, section) {
+                val showPage:
+                    @Composable
+                    (CatalogPage, ArtistTracksPage?, @Composable () -> Unit) -> Unit =
+                    { page, songs, footer ->
+                        CatalogPageContent(
+                            page,
+                            section,
+                            controller,
+                            state,
+                            { navigation.open(it) },
+                            { navigation.open(page.entry, ArtistSection.SONGS) },
+                            onPlaylist,
+                            onOpenTrack,
+                            songs,
+                            footer,
+                        )
+                    }
+                if (section == ArtistSection.SONGS) {
+                    ArtistSongs(source, entry, navigation) { songs, footer ->
+                        showPage(CatalogPage(entry, songs.tracks, emptyList(), null), songs, footer)
+                    }
+                } else {
+                    CatalogLoad({ source.catalogPage(entry) }) { page ->
+                        val filtered =
+                            when (section) {
+                                ArtistSection.ALBUMS ->
+                                    page.copy(
+                                        tracks = emptyList(),
+                                        releases =
+                                            page.releases.filter { it.kind == CatalogKind.ALBUM },
+                                    )
+                                ArtistSection.SINGLES ->
+                                    page.copy(
+                                        tracks = emptyList(),
+                                        releases =
+                                            page.releases.filter { it.kind == CatalogKind.SINGLE },
+                                    )
+                                else -> page
+                            }
+                        showPage(filtered, null) {}
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
+private fun ArtistSongs(
+    source: DesktopCatalogSource,
+    entry: CatalogEntry,
+    navigation: CatalogNavigation,
+    onLoaded: @Composable (ArtistTracksPage, @Composable () -> Unit) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var loading by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    val saved = navigation.songsFor(entry)
+    val showSongs: @Composable (ArtistTracksPage) -> Unit = { page ->
+        onLoaded(page) {
+            if (page.cursor != null || page.expired) {
+                TextButton(
+                    enabled = !loading,
+                    onClick = {
+                        loading = true
+                        failed = false
+                        scope.launch {
+                            try {
+                                val next = source.artistTracks(entry, page.cursor)
+                                navigation.saveSongs(entry, page.append(next))
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                failed = true
+                            } finally {
+                                loading = false
+                            }
+                        }
+                    },
+                ) {
+                    Text(
+                        when {
+                            loading -> "Загружаем…"
+                            page.expired -> "Обновить список"
+                            failed -> "Повторить загрузку"
+                            else -> "Показать ещё"
+                        }
+                    )
+                }
+            }
+        }
+    }
+    if (saved != null) showSongs(saved)
+    else
+        CatalogLoad({ source.artistTracks(entry) }) { page ->
+            LaunchedEffect(page) { navigation.saveSongs(entry, page) }
+            showSongs(page)
+        }
+}
+
+@Composable
+internal fun TrackArtistDialog(
+    source: DesktopCatalogSource,
+    track: Track,
+    onDismiss: () -> Unit,
+    onOpen: (CatalogEntry) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Исполнители · ${track.artist}") },
+        text = {
+            Box(Modifier.fillMaxWidth().heightIn(min = 135.dp, max = 320.dp)) {
+                key(track.id) {
+                    CatalogLoad({ source.findTrackArtists(track) }) { result ->
+                        when {
+                            result.direct != null ->
+                                LaunchedEffect(result.direct) { onOpen(result.direct) }
+                            result.candidates.isEmpty() ->
+                                Text("В каталоге нет подходящих профилей.")
+                            else ->
+                                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    items(result.candidates, key = { it.id }) { artist ->
+                                        CatalogEntryRow(artist) { onOpen(artist) }
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}
+
+@Composable
 private fun CatalogPageContent(
     page: CatalogPage,
+    section: ArtistSection,
     controller: RiffunaController,
     state: AppState,
     onCatalogOpen: (CatalogEntry) -> Unit,
+    onSongs: () -> Unit,
     onPlaylist: (List<Track>) -> Unit,
     onOpenTrack: (Track) -> Unit,
+    songs: ArtistTracksPage?,
+    footer: @Composable () -> Unit,
 ) {
     val entry = page.entry
     var selectedId by remember(entry.id) { mutableStateOf<String?>(null) }
@@ -295,7 +489,9 @@ private fun CatalogPageContent(
         }
         if (page.tracks.isNotEmpty()) {
             item("tracks-heading") {
-                SectionTitle(if (entry.kind == CatalogKind.ARTIST) "Популярные треки" else "Треки")
+                if (entry.kind == CatalogKind.ARTIST && section == ArtistSection.OVERVIEW)
+                    SectionTitle("Популярные треки", "Треки исполнителя", onSongs)
+                else SectionTitle("Треки")
             }
             itemsIndexed(page.tracks, key = { _, track -> "track-" + track.id }) { index, track ->
                 TrackRow(
@@ -336,7 +532,22 @@ private fun CatalogPageContent(
                 }
             }
         }
-        if (page.tracks.isEmpty() && page.releases.isEmpty()) {
+        if (songs?.partial == true) {
+            item("partial") {
+                Text(
+                    "YouTube Music предоставил только подборку популярных треков.",
+                    Modifier.padding(vertical = 12.dp),
+                    color = RiffunaColors.Secondary,
+                )
+            }
+        }
+        if (songs?.cursor != null || songs?.expired == true) item("more", content = { footer() })
+        if (
+            page.tracks.isEmpty() &&
+                page.releases.isEmpty() &&
+                songs?.cursor == null &&
+                songs?.partial != true
+        ) {
             item("empty") {
                 EmptyState(
                     Icons.Outlined.LibraryMusic,

@@ -278,6 +278,7 @@ fun ExpandedPlayer(
     coverModifier: Modifier,
     onImport: () -> Unit,
     onPlaylist: (List<Track>) -> Unit,
+    onArtist: ((Track) -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxSize().background(RiffunaColors.Background)) {
         Row(
@@ -342,17 +343,18 @@ fun ExpandedPlayer(
                             maxLines = 2,
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        Text(
-                            state.current?.artist.orEmpty(),
-                            Modifier.fillMaxWidth().padding(top = 8.dp),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = RiffunaColors.Secondary,
-                        )
+                        Box(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                            PlayerArtistName(
+                                state.current,
+                                onArtist,
+                                MaterialTheme.typography.titleMedium,
+                            )
+                        }
                     }
                 }
             }
             LyricsPanel(controller, state, onImport, Modifier.weight(1f).fillMaxHeight())
         }
-        PlayerBar(controller, state, showCover = false)
+        PlayerBar(controller, state, showCover = false, onArtist = onArtist)
     }
 }

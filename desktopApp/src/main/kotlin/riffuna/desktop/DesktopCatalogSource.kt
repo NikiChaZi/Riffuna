@@ -22,6 +22,49 @@ data class CatalogEntry(
     val year: String = "",
 )
 
+data class ArtistTracksPage(
+    val tracks: List<Track>,
+    val cursor: String? = null,
+    val partial: Boolean = false,
+    val expired: Boolean = false,
+) {
+    internal fun append(next: ArtistTracksPage) =
+        when {
+            next.expired -> copy(cursor = null, expired = true)
+            expired -> next
+            else ->
+                next.copy(
+                    tracks = (tracks + next.tracks).distinctBy(Track::id),
+                    partial = partial || next.partial,
+                )
+        }
+}
+
+internal data class ArtistLookup(val candidates: List<CatalogEntry>, val direct: CatalogEntry?)
+
+internal suspend fun DesktopCatalogSource.findTrackArtists(track: Track): ArtistLookup {
+    val linked = trackArtists(track)
+    if (linked.isNotEmpty()) return ArtistLookup(linked, linked.singleOrNull())
+
+    val names = track.artist.split(", ").map(String::trim).filter(String::isNotBlank).distinct()
+    val results = names.map { name -> name to searchCatalog(name, CatalogKind.ARTIST) }
+    val candidates =
+        results
+            .flatMap { (name, entries) ->
+                entries
+                    .filter { MusicRules.artist(it.title) == MusicRules.artist(name) }
+                    .ifEmpty { entries.take(5) }
+            }
+            .distinctBy { it.id }
+    val direct =
+        if (names.size == 1)
+            candidates.singleOrNull()?.takeIf {
+                MusicRules.artist(it.title) == MusicRules.artist(names.single())
+            }
+        else null
+    return ArtistLookup(candidates, direct)
+}
+
 data class CatalogPage(
     val entry: CatalogEntry,
     val tracks: List<Track>,
@@ -33,6 +76,10 @@ interface DesktopCatalogSource {
     suspend fun searchCatalog(query: String, kind: CatalogKind): List<CatalogEntry>
 
     suspend fun catalogPage(entry: CatalogEntry): CatalogPage
+
+    suspend fun artistTracks(entry: CatalogEntry, cursor: String? = null): ArtistTracksPage
+
+    suspend fun trackArtists(track: Track): List<CatalogEntry>
 }
 
 internal fun JsonObject.catalogText(key: String): String =

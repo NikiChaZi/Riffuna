@@ -122,6 +122,40 @@ function catalogEntry(row, kind, shelf = '') {
  return { id, title, artist, type, year: catalogName(row.year), thumbnail: catalogThumbnail(row) };
 }
 
+function catalogTrackCredits(row) {
+ const credits = [...(row.artists ?? []), ...(row.authors ?? [])];
+ return distinctCatalogRows(credits.map(artist => {
+  const id = artist.channel_id || artist.endpoint?.payload?.browseId || '';
+  const title = catalogName(artist.name);
+  return /^UC[\w-]{22}$/.test(id) && title ? { id, title } : null;
+ }));
+}
+
+const catalogCredits = new Map();
+
+function rememberCatalogCredits(id, row) {
+ const credits = catalogTrackCredits(row);
+ if (credits.length) {
+  catalogCredits.set(id, credits);
+  if (catalogCredits.size > 2000) catalogCredits.delete(catalogCredits.keys().next().value);
+ }
+ return credits;
+}
+
+async function catalogArtistsForTrack(id) {
+ if (!/^[\w-]{11}$/.test(id)) throw Error('InvalidId');
+ const cached = catalogCredits.get(id);
+ if (cached) return { entries: cached };
+ try {
+  const queue = await (await yt()).music.getUpNext(id, false);
+  const recording = queue.contents.find(row => row.video_id === id);
+  if (recording) return { entries: rememberCatalogCredits(id, recording) };
+ } catch {
+  // An upload can have no YouTube Music credits. Let the client match its displayed names.
+ }
+ return { entries: [] };
+}
+
 function distinctCatalogRows(rows) {
  return [...new Map(rows.filter(Boolean).map(row => [row.id, row])).values()];
 }
@@ -145,6 +179,7 @@ function catalogTrack(row, artist, artwork, album = false) {
  if (row.item_type !== 'song' && !albumAudio) return null;
  const track = musicRow(row);
  if (!track || !/^[\w-]{11}$/.test(track.id)) return null;
+ rememberCatalogCredits(track.id, row);
  return {
   ...track,
   musicType: albumAudio ? 'MUSIC_VIDEO_TYPE_OMV' : track.musicType,
@@ -153,16 +188,68 @@ function catalogTrack(row, artist, artwork, album = false) {
  };
 }
 
-async function catalogArtist(id) {
+const artistPages = new Map();
+const artistContinuations = new Map();
+
+async function getCatalogArtist(id) {
  if (!/^UC[\w-]{22}$/.test(id)) throw Error('InvalidId');
+ const cached = artistPages.get(id);
+ if (cached?.expires > Date.now()) return cached.page;
  const page = await (await yt()).music.getArtist(id);
+ artistPages.set(id, { page, expires: Date.now() + 300_000 });
+ if (artistPages.size > 24) artistPages.delete(artistPages.keys().next().value);
+ return page;
+}
+
+function artistSongsShelf(page) {
+ return page.sections.find(section => section.type === 'MusicShelf'
+  && /^(top songs|songs)$/i.test(catalogName(section.title)));
+}
+
+async function catalogArtistTracks(id, cursor) {
+ let page;
+ let title;
+ let thumbnail;
+ if (cursor) {
+  const saved = artistContinuations.get(cursor);
+  if (!saved || saved.id !== id || saved.expires < Date.now()) return { expired: true };
+  ({ title, thumbnail } = saved);
+  try {
+   page = await saved.page.getContinuation();
+  } catch {
+   return { retry: true };
+  }
+  artistContinuations.delete(cursor);
+ } else {
+  const artist = await getCatalogArtist(id);
+  const shelf = artistSongsShelf(artist);
+  title = catalogName(artist.header?.title);
+  thumbnail = catalogThumbnail(artist.header) || thumb(artist.header?.foreground_thumbnail);
+  const playlist = shelf?.endpoint?.payload?.browseId || '';
+  if (!/^VL[\w-]{1,120}$/.test(playlist)) {
+   return {
+    tracks: distinctCatalogRows((shelf?.contents ?? []).map(row => catalogTrack(row, title, thumbnail))),
+    partial: true,
+   };
+  }
+  page = await (await yt()).music.getPlaylist(playlist);
+ }
+ const tracks = distinctCatalogRows((page.contents ?? []).map(row => catalogTrack(row, title, thumbnail)));
+ let next = '';
+ if (page.has_continuation) {
+  next = randomUUID();
+  artistContinuations.set(next, { id, page, title, thumbnail, expires: Date.now() + 1_800_000 });
+  if (artistContinuations.size > 32) artistContinuations.delete(artistContinuations.keys().next().value);
+ }
+ return { tracks, cursor: next };
+}
+
+async function catalogArtist(id) {
+ const page = await getCatalogArtist(id);
  const title = catalogName(page.header?.title);
  const thumbnail = catalogThumbnail(page.header) || thumb(page.header?.foreground_thumbnail);
  // The artist endpoint publishes popular tracks in MusicShelf, and releases in carousel shelves.
- const tracks = page.sections
-  .filter(section => section.type === 'MusicShelf')
-  .flatMap(section => section.contents || [])
-  .map(row => catalogTrack(row, title, thumbnail));
+ const tracks = (artistSongsShelf(page)?.contents ?? []).map(row => catalogTrack(row, title, thumbnail));
  const releases = page.sections
   .filter(section => section.type === 'MusicCarouselShelf')
   .filter(section => /^(albums|singles(?:\s*(?:&|and)\s*eps)?|eps|releases)$/i.test(catalogName(section.header?.title)))
@@ -170,7 +257,7 @@ async function catalogArtist(id) {
  return {
   title,
   thumbnail,
-  tracks: distinctCatalogRows(tracks).slice(0, 40),
+  tracks: distinctCatalogRows(tracks).slice(0, 5),
   releases: distinctCatalogRows(releases).slice(0, 80),
  };
 }
@@ -306,6 +393,8 @@ async function execute(request){
  case 'capabilities':return {qt_loaded:false,python:false,protocol:2,provider:'youtubei.js',version:'18.3.0'};
  case 'catalog_search':return catalogSearch(String(request.query||''),request.kind);
  case 'catalog_artist':return catalogArtist(String(request.id||''));
+ case 'catalog_artist_tracks':return catalogArtistTracks(String(request.id||''),String(request.cursor||''));
+ case 'catalog_track_artists':return catalogArtistsForTrack(String(request.id||''));
  case 'catalog_album':return catalogAlbum(String(request.id||''));
  case 'search':return musicSearch(String(request.query||''),Math.min(180,Math.max(1,request.limit||80)));
  case 'videos':return videoSearch(String(request.query||''));

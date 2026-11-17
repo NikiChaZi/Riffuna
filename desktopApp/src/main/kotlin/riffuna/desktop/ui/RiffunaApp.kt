@@ -40,11 +40,15 @@ fun RiffunaApp(
     var query by remember { mutableStateOf(state.query) }
     LaunchedEffect(state.query) { query = state.query }
     val catalogNavigation = remember { CatalogNavigation() }
+    var artistLookupTrack by remember { mutableStateOf<Track?>(null) }
+    val openTrackArtist: ((Track) -> Unit)? =
+        catalogSource?.let { { track -> artistLookupTrack = track } }
     val offline = LocalOfflineDownloads.current
     var downloadsOpen by remember { mutableStateOf(false) }
     var downloadsForward by remember { mutableStateOf(false) }
     LaunchedEffect(state.view, state.query) { catalogNavigation.reset() }
     fun openDownloads() {
+        catalogNavigation.reset()
         downloadsOpen = true
         downloadsForward = false
     }
@@ -58,22 +62,26 @@ fun RiffunaApp(
         controller.search(query)
     }
     fun navigateBack() {
-        if (downloadsOpen) {
-            downloadsOpen = false
-            downloadsForward = true
-        } else {
-            downloadsForward = false
-            if (catalogNavigation.canGoBack) catalogNavigation.goBack()
-            else controller.navigateBack()
+        when {
+            catalogNavigation.canGoBack -> catalogNavigation.goBack()
+            downloadsOpen -> {
+                downloadsOpen = false
+                downloadsForward = true
+            }
+            else -> {
+                downloadsForward = false
+                controller.navigateBack()
+            }
         }
     }
     fun navigateForward() {
-        if (downloadsForward) {
-            downloadsOpen = true
-            downloadsForward = false
-        } else if (!downloadsOpen) {
-            if (catalogNavigation.canGoForward) catalogNavigation.goForward()
-            else controller.navigateForward()
+        when {
+            catalogNavigation.canGoForward -> catalogNavigation.goForward()
+            downloadsForward -> {
+                downloadsOpen = true
+                downloadsForward = false
+            }
+            !downloadsOpen -> controller.navigateForward()
         }
     }
     var typing by remember { mutableStateOf(false) }
@@ -221,7 +229,14 @@ fun RiffunaApp(
                                 },
                             )
                         if (expanded)
-                            ExpandedPlayer(controller, state, cover, onImport, showPlaylist)
+                            ExpandedPlayer(
+                                controller,
+                                state,
+                                cover,
+                                onImport,
+                                showPlaylist,
+                                openTrackArtist,
+                            )
                         else
                             Column(Modifier.fillMaxSize()) {
                                 Row(Modifier.weight(1f)) {
@@ -238,7 +253,10 @@ fun RiffunaApp(
                                         onOpenDownloads =
                                             if (offline == null) null else ::openDownloads,
                                         downloadsSelected = downloadsOpen,
-                                        onLibraryNavigation = ::closeDownloads,
+                                        onLibraryNavigation = {
+                                            catalogNavigation.reset()
+                                            closeDownloads()
+                                        },
                                     )
                                     Column(Modifier.weight(1f).fillMaxHeight()) {
                                         Row(
@@ -306,7 +324,11 @@ fun RiffunaApp(
                                                 .padding(horizontal = 28.dp)
                                                 .graphicsLayer { this.alpha = alpha.value }
                                         ) {
-                                            if (downloadsOpen && offline != null) {
+                                            if (
+                                                catalogNavigation.current == null &&
+                                                    downloadsOpen &&
+                                                    offline != null
+                                            ) {
                                                 OfflineDownloadsScreen(offline, controller)
                                             } else
                                                 CatalogHost(
@@ -382,7 +404,7 @@ fun RiffunaApp(
                                         )
                                     }
                                 }
-                                PlayerBar(controller, state, cover)
+                                PlayerBar(controller, state, cover, onArtist = openTrackArtist)
                             }
                     }
                 }
@@ -409,6 +431,15 @@ fun RiffunaApp(
                         )
                     }
                 }
+            }
+        }
+        val selectedTrack = artistLookupTrack
+        if (catalogSource != null && selectedTrack != null) {
+            TrackArtistDialog(catalogSource, selectedTrack, { artistLookupTrack = null }) { artist
+                ->
+                artistLookupTrack = null
+                catalogNavigation.open(artist, ArtistSection.SONGS)
+                controller.openNowPlaying(false)
             }
         }
         if (editor)

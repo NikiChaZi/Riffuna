@@ -170,6 +170,8 @@ class DesktopSource(private val home: Path, private val data: Path) :
                 "resolve" -> audioWorker
                 "catalog_search",
                 "catalog_artist",
+                "catalog_artist_tracks",
+                "catalog_track_artists",
                 "catalog_album" -> catalogWorker
                 else -> searchWorker
             }
@@ -221,6 +223,39 @@ class DesktopSource(private val home: Path, private val data: Path) :
             )
             .catalogRows("entries")
             .mapNotNull { it.catalogEntry(kind) }
+    }
+
+    override suspend fun trackArtists(track: Track): List<CatalogEntry> {
+        if (track.isLocalFile) return emptyList()
+        return request(
+                buildJsonObject {
+                    put("action", "catalog_track_artists")
+                    put("id", track.id)
+                }
+            )
+            .catalogRows("entries")
+            .mapNotNull { it.catalogEntry(CatalogKind.ARTIST) }
+    }
+
+    override suspend fun artistTracks(entry: CatalogEntry, cursor: String?): ArtistTracksPage {
+        require(entry.kind == CatalogKind.ARTIST)
+        val result =
+            request(
+                buildJsonObject {
+                    put("action", "catalog_artist_tracks")
+                    put("id", entry.id)
+                    if (cursor != null) put("cursor", cursor)
+                }
+            )
+        check(result["retry"]?.jsonPrimitive?.booleanOrNull != true) {
+            "Could not load the next page"
+        }
+        return ArtistTracksPage(
+            tracks = result.catalogRows("tracks").mapNotNull(MusicRules::track),
+            cursor = result.catalogText("cursor").ifBlank { null },
+            partial = result["partial"]?.jsonPrimitive?.booleanOrNull == true,
+            expired = result["expired"]?.jsonPrimitive?.booleanOrNull == true,
+        )
     }
 
     override suspend fun catalogPage(entry: CatalogEntry): CatalogPage {
