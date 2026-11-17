@@ -11,31 +11,44 @@ class LocalController(
     private val source: MusicSource,
     private val audio: AudioEngine,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val recoverNetworkPlayback: Boolean = false,
 ) : RiffunaController {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val initialQueue = library.queue()
     private val queue = PlaybackQueue(initialQueue.first, initialQueue.second)
     private val initialCurrent = library.current()
+    private var currentExact = library.setting("playback_exact", "off") == "on"
+    private var queueExact = library.setting("queue_exact", "off") == "on"
+    private val initialPosition =
+        library
+            .setting("playback_position", "")
+            .takeIf { it.substringBeforeLast(':') == initialCurrent?.id }
+            ?.substringAfterLast(':')
+            ?.toLongOrNull()
+            ?.coerceAtLeast(0) ?: 0L
     private val initialLikes = library.likes()
     private val initialHistory = library.history()
     private val initialReference =
-        runCatching {
-                Json.decodeFromJsonElement<Track>(
-                    Json.parseToJsonElement(library.setting("playback_reference", ""))
-                )
-            }
-            .getOrNull()
-            ?.takeIf { library.preferred(it).id == initialCurrent?.id }
-            ?: initialQueue.first.getOrNull(initialQueue.second)?.takeIf {
-                library.preferred(it).id == initialCurrent?.id
-            }
-            ?: (initialQueue.first + initialLikes + initialHistory)
-                .distinctBy { it.id }
-                .take(256)
-                .firstOrNull {
-                    it.id != initialCurrent?.id && library.preferred(it).id == initialCurrent?.id
+        if (currentExact) initialCurrent
+        else
+            runCatching {
+                    Json.decodeFromJsonElement<Track>(
+                        Json.parseToJsonElement(library.setting("playback_reference", ""))
+                    )
                 }
-            ?: initialCurrent
+                .getOrNull()
+                ?.takeIf { library.preferred(it).id == initialCurrent?.id }
+                ?: initialQueue.first.getOrNull(initialQueue.second)?.takeIf {
+                    library.preferred(it).id == initialCurrent?.id
+                }
+                ?: (initialQueue.first + initialLikes + initialHistory)
+                    .distinctBy { it.id }
+                    .take(256)
+                    .firstOrNull {
+                        it.id != initialCurrent?.id &&
+                            library.preferred(it).id == initialCurrent?.id
+                    }
+                ?: initialCurrent
     private val mutable =
         MutableStateFlow(
             AppState(
@@ -49,6 +62,8 @@ class LocalController(
                     PlaybackUiState(
                         playbackReference = initialReference,
                         current = initialCurrent,
+                        positionMs = initialPosition,
+                        normalizeLoudness = library.setting("normalize_loudness", "off") == "on",
                         durationMs = initialCurrent?.duration?.times(1000L) ?: 0,
                         volume =
                             (library.setting("volume", "0.65").toFloatOrNull() ?: .65f).coerceIn(
@@ -88,6 +103,10 @@ class LocalController(
     private var observedOutputRevision = 0L
     private var wantPlay = true
     private var pendingSeek: Long? = null
+    private var startPausedForSeek = false
+    private var bufferingJob: Job? = null
+    private var networkRetries = 0
+    private var checkpoint = initialPosition
     private var searchResults = emptyList<Track>()
     private var searchJob: Job? = null
     private var playJob: Job? = null
@@ -142,6 +161,7 @@ class LocalController(
                 .getOrNull()
         queue.restore(priorityIds, continuationIds)
         audio.setVolume(state.value.volume)
+        audio.setLoudnessNormalization(state.value.playback.normalizeLoudness)
         scope.launch {
             audio.state.collect { value ->
                 if (value.outputRevision != observedOutputRevision) {
@@ -149,11 +169,28 @@ class LocalController(
                     refreshAudioDevices()
                 }
                 if (!sourceAttached) return@collect
+                if (value.error != null) {
+                    recoverAttachment(value.error)
+                    return@collect
+                }
+                if (value.buffering && wantPlay && isRecoverableSource()) {
+                    if (bufferingJob?.isActive != true)
+                        bufferingJob =
+                            scope.launch {
+                                delay(20_000)
+                                if (sourceAttached && wantPlay && audio.state.value.buffering) {
+                                    recoverAttachment("Подключение к записи прервалось")
+                                }
+                            }
+                } else {
+                    bufferingJob?.cancel()
+                    bufferingJob = null
+                }
                 mutable.update {
                     it.copy(
                         playback =
                             it.playback.copy(
-                                positionMs = value.positionMs,
+                                positionMs = pendingSeek ?: value.positionMs,
                                 durationMs =
                                     if (value.durationMs > 0) value.durationMs
                                     else it.current?.duration?.times(1000L) ?: 0,
@@ -166,9 +203,22 @@ class LocalController(
                 if (value.seekable)
                     pendingSeek?.let { target ->
                         pendingSeek = null
-                        audio.seek(target)
+                        try {
+                            audio.seek(target)
+                        } catch (_: IllegalStateException) {
+                            recoverAttachment("Не удалось перейти к выбранной позиции")
+                            return@collect
+                        }
+                        if (startPausedForSeek && wantPlay) audio.resume()
+                        startPausedForSeek = false
                     }
-                if (value.playing && state.value.status == "Подключаем запись…")
+                if (value.playing && kotlin.math.abs(state.value.positionMs - checkpoint) >= 10_000)
+                    savePosition()
+                if (
+                    value.playing &&
+                        state.value.status in
+                            setOf("Подключаем запись…", "Восстанавливаем воспроизведение…")
+                )
                     mutable.update { it.copy(status = "Сейчас играет") }
                 if (value.playing && !logged) {
                     state.value.current?.let { library.recordPlay(it) }
@@ -185,26 +235,69 @@ class LocalController(
                         audio.resume()
                     } else next()
                 }
-                if (value.error != null) {
-                    state.value.current?.let(source::invalidate)
-                    sourceAttached = false
-                    wantPlay = false
-                    mutable.update {
-                        it.copy(
-                            status = value.error,
-                            playback =
-                                it.playback.copy(
-                                    playbackError = value.error,
-                                    playing = false,
-                                    seekable = false,
-                                    loading = false,
-                                    playbackLoading = false,
-                                ),
-                        )
-                    }
-                    toast(value.error)
-                }
             }
+        }
+    }
+
+    private fun isRecoverableSource(): Boolean =
+        recoverNetworkPlayback && state.value.current?.isLocalFile == false
+
+    private fun canRecover(): Boolean = networkRetries > 0 && isRecoverableSource()
+
+    private fun recoverAttachment(message: String) {
+        val selected = state.value.current ?: return
+        val position = pendingSeek ?: state.value.positionMs
+        sourceAttached = false
+        bufferingJob?.cancel()
+        bufferingJob = null
+        audio.pause()
+        source.invalidate(selected)
+        if (canRecover() && wantPlay) {
+            networkRetries--
+            pendingSeek = position.takeIf { it > 0 }
+            mutable.update {
+                it.copy(
+                    status = "Восстанавливаем воспроизведение…",
+                    playback =
+                        it.playback.copy(
+                            playing = false,
+                            seekable = false,
+                            loading = true,
+                            playbackLoading = true,
+                        ),
+                )
+            }
+            attachRecording(selected, playGeneration, waitForNetwork = true)
+        } else {
+            wantPlay = false
+            failAttachment(message)
+        }
+    }
+
+    private fun failAttachment(message: String) {
+        mutable.update {
+            it.copy(
+                status = message,
+                playback =
+                    it.playback.copy(
+                        playbackError = message,
+                        playing = false,
+                        seekable = false,
+                        loading = false,
+                        playbackLoading = false,
+                    ),
+            )
+        }
+        toast(message)
+    }
+
+    private fun savePosition() {
+        val s = state.value
+        val current = s.current ?: return
+        val position = pendingSeek ?: s.positionMs
+        if (position != checkpoint || position == 0L) {
+            library.setSetting("playback_position", "${current.id}:$position")
+            checkpoint = position
         }
     }
 
@@ -653,7 +746,7 @@ class LocalController(
         val s = state.value
         val candidate = queue.peekNext(s.shuffle, s.repeatMode)
         val effective =
-            candidate?.let(library::preferred)
+            candidate?.let { if (queueExact) it else library.preferred(it) }
                 ?: run {
                     prefetchJob?.cancel()
                     prefetchedId = null
@@ -677,6 +770,8 @@ class LocalController(
     private fun save() {
         val s = state.value
         library.saveQueue(s.queue, s.queueIndex, s.current)
+        library.setSetting("queue_exact", if (queueExact) "on" else "off")
+        library.setSetting("playback_exact", if (currentExact) "on" else "off")
         library.setSetting(
             "playback_reference",
             s.playbackReference?.let { Json.encodeToJsonElement(it).toString() } ?: "",
@@ -876,24 +971,38 @@ class LocalController(
         applyNavigation(Navigation(LibraryView.PLAYLIST, id), true)
     }
 
-    override fun play(track: Track) {
+    override fun play(track: Track) = startPlayback(track)
+
+    private fun startPlayback(
+        track: Track,
+        position: Long = 0,
+        keepQueue: Boolean = false,
+        exactRecording: Boolean = false,
+    ) {
         suggestionGeneration++
         suggestionJob?.cancel()
         suggestionJob = null
         playJob?.cancel()
+        bufferingJob?.cancel()
+        bufferingJob = null
         lyricsJob?.cancel()
         val generation = ++playGeneration
         logged = false
         endHandled = false
         sourceAttached = false
         wantPlay = true
-        pendingSeek = null
-        val selected = library.preferred(track)
+        pendingSeek = position.takeIf { it > 0 }
+        networkRetries = if (recoverNetworkPlayback) 1 else 0
+        currentExact = exactRecording
+        val selected = if (exactRecording) track else library.preferred(track)
         val s = state.value
         val context =
             if (s.view == LibraryView.PLAYLIST || s.view == LibraryView.LIKES) displayedTracks(s)
             else s.queue
-        queue.begin(track, context, recordHistory = !preserveTraversal)
+        if (!keepQueue) {
+            if (s.view == LibraryView.PLAYLIST || s.view == LibraryView.LIKES) queueExact = false
+            queue.begin(track, context, recordHistory = !preserveTraversal)
+        }
         mutable.update {
             it.copy(
                 status = "Подключаем запись…",
@@ -906,7 +1015,7 @@ class LocalController(
                         playbackLoading = true,
                         playing = false,
                         seekable = false,
-                        positionMs = 0,
+                        positionMs = position,
                         durationMs = selected.duration * 1000L,
                     ),
                 lyricsState =
@@ -920,41 +1029,50 @@ class LocalController(
             )
         }
         save()
+        checkpoint = -1
+        savePosition()
         audio.pause()
+        attachRecording(selected, generation)
+    }
+
+    private fun attachRecording(
+        selected: Track,
+        generation: Long,
+        waitForNetwork: Boolean = false,
+    ) {
         playJob =
             scope.launch {
-                try {
-                    val stream = withContext(ioDispatcher) { source.resolve(selected) }
-                    if (generation != playGeneration) return@launch
-                    audio.open(stream.copy(autoPlay = wantPlay))
-                    if (generation == playGeneration) {
+                if (waitForNetwork) delay(900)
+                while (true) {
+                    try {
+                        val stream = withContext(ioDispatcher) { source.resolve(selected) }
+                        if (generation != playGeneration) return@launch
+                        startPausedForSeek = pendingSeek != null
+                        audio.open(stream.copy(autoPlay = wantPlay && !startPausedForSeek))
+                        if (generation != playGeneration) return@launch
                         sourceAttached = true
                         mutable.update {
                             it.copy(
-                                status = "Подключаем запись…",
                                 playback =
-                                    it.playback.copy(loading = false, playbackLoading = false),
+                                    it.playback.copy(loading = false, playbackLoading = false)
                             )
                         }
                         loadLyrics(selected)
                         prepareNext()
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    if (generation == playGeneration)
-                        mutable.update {
-                            it.copy(
-                                status = "Запись недоступна. Повтори попытку.",
-                                playback =
-                                    it.playback.copy(
-                                        playbackError = "Запись недоступна. Повтори попытку.",
-                                        loading = false,
-                                        playbackLoading = false,
-                                        playing = false,
-                                    ),
-                            )
+                        return@launch
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        if (generation != playGeneration) return@launch
+                        if (!canRecover() || !wantPlay) {
+                            failAttachment("Запись недоступна. Повтори попытку.")
+                            return@launch
                         }
+                        networkRetries--
+                        source.invalidate(selected)
+                        mutable.update { it.copy(status = "Восстанавливаем воспроизведение…") }
+                        delay(900)
+                    }
                 }
             }
     }
@@ -981,7 +1099,7 @@ class LocalController(
             mutable.update {
                 it.copy(navigationState = it.navigationState.copy(view = LibraryView.QUEUE))
             }
-            play(track)
+            startPlayback(track, exactRecording = queueExact)
         } finally {
             preserveTraversal = false
             mutable.update {
@@ -998,12 +1116,14 @@ class LocalController(
         if (state.value.queue.isNotEmpty()) playQueued(0)
     }
 
-    override fun playAll() {
-        val tracks = displayedTracks(state.value)
-        if (tracks.isEmpty()) return
+    override fun playAll() = playContext(displayedTracks(state.value))
+
+    override fun playContext(tracks: List<Track>, index: Int, exactRecordings: Boolean) {
+        val id = tracks.getOrNull(index)?.id ?: return
+        queueExact = exactRecordings
         queue.reset(tracks)
         publishQueue()
-        playQueued(0)
+        playQueued(queue.tracks.indexOfFirst { it.id == id })
     }
 
     override fun removeFromQueue(id: String) {
@@ -1097,11 +1217,11 @@ class LocalController(
         wantPlay = true
         val current = state.value
         if (current.playbackLoading) {
-            if (sourceAttached) audio.resume()
+            if (sourceAttached && !startPausedForSeek) audio.resume()
         } else if (current.current == null) {
             if (current.queue.isNotEmpty()) playQueued(0)
         } else if (!sourceAttached) {
-            play(current.queue.getOrNull(current.queueIndex) ?: requireNotNull(current.current))
+            resumeCurrent(current)
         } else {
             if (audio.state.value.ended) audio.seek(0)
             audio.resume()
@@ -1112,7 +1232,7 @@ class LocalController(
         val s = state.value
         if (s.playbackLoading) {
             wantPlay = !wantPlay
-            if (sourceAttached) {
+            if (sourceAttached && !startPausedForSeek) {
                 if (wantPlay) audio.resume() else audio.pause()
             }
             return
@@ -1120,8 +1240,7 @@ class LocalController(
         val current = s.current
         if (current == null) {
             if (s.queue.isNotEmpty()) playQueued(0)
-        } else if (!sourceAttached)
-            play(s.queue.getOrNull(s.queueIndex) ?: requireNotNull(s.current))
+        } else if (!sourceAttached) resumeCurrent(s)
         else if (audio.state.value.ended) {
             wantPlay = true
             audio.seek(0)
@@ -1132,13 +1251,23 @@ class LocalController(
         }
     }
 
+    private fun resumeCurrent(s: AppState) {
+        val current = s.current ?: return
+        val reference = s.playbackReference?.takeIf { library.preferred(it).id == current.id }
+        startPlayback(
+            reference ?: current,
+            pendingSeek ?: s.positionMs,
+            keepQueue = true,
+            exactRecording = currentExact,
+        )
+    }
+
     override fun seek(positionMs: Long) {
         val s = state.value
         val target = positionMs.coerceIn(0, s.durationMs.coerceAtLeast(0))
         if (!sourceAttached) {
             if (s.current != null) {
-                if (!s.playbackLoading)
-                    play(s.queue.getOrNull(s.queueIndex) ?: requireNotNull(s.current))
+                if (!s.playbackLoading) resumeCurrent(s)
                 pendingSeek = target
             }
             return
@@ -1179,6 +1308,7 @@ class LocalController(
         prefetchJob?.cancel()
         prefetchedId = null
         queue.reset()
+        queueExact = false
         publishQueue()
         save()
     }
@@ -1230,8 +1360,49 @@ class LocalController(
         mutable.update { it.copy(queueState = it.queueState.copy(queueVisible = !it.queueVisible)) }
     }
 
+    override fun setLoudnessNormalization(enabled: Boolean) {
+        audio.setLoudnessNormalization(enabled)
+        library.setSetting("normalize_loudness", if (enabled) "on" else "off")
+        mutable.update { it.copy(playback = it.playback.copy(normalizeLoudness = enabled)) }
+    }
+
+    override suspend fun exportCollection(): String =
+        withContext(ioDispatcher) { library.exportCollection() }
+
+    override fun importCollection(text: String) {
+        scope.launch {
+            try {
+                val result =
+                    withContext(ioDispatcher) {
+                        library.importCollection(CollectionTransfer.decode(text))
+                    }
+                refreshCollections()
+                if (state.value.view == LibraryView.PLAYLIST) {
+                    state.value.playlistId?.let { id ->
+                        mutable.update {
+                            it.copy(
+                                libraryState =
+                                    it.libraryState.copy(visibleTracks = library.playlistTracks(id))
+                            )
+                        }
+                    }
+                }
+                toast(
+                    "Добавлено: лайки ${result.likes}, плейлисты ${result.playlists}, версии ${result.recordingChoices}"
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                toast("Не удалось импортировать коллекцию")
+            }
+        }
+    }
+
+    override fun notifyUser(message: String) = toast(message)
+
     fun close() {
         save()
+        savePosition()
         library.setSetting("volume", state.value.volume.toString())
         scope.cancel()
         audio.close()

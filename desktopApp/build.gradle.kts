@@ -36,9 +36,10 @@ compose.desktop {
                 rootProject.layout.projectDirectory.dir("build/desktop-resources")
             )
             packageName = "Riffuna"
-            packageVersion = "0.3.0"
+            packageVersion = providers.gradleProperty("riffunaWindowsVersion").get()
             modules("java.sql", "java.net.http", "jdk.crypto.ec", "jdk.httpserver")
             windows {
+                upgradeUuid = "8A8A2DD3-7E61-3346-823F-5A0977AF4D05"
                 iconFile.set(rootProject.file("assets/riffuna.ico"))
                 menuGroup = "Riffuna"
                 shortcut = true

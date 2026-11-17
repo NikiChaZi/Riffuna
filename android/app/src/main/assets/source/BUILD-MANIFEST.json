@@ -2,7 +2,7 @@
   "youtubejs_version": "18.3.0",
   "upstream": "https://github.com/LuanRT/YouTube.js",
   "desktop_reference": "source-runtime/index.mjs",
-  "desktop_sha256": "8a726c98bd6b98064602dcff3dbd27e58bb4381f679a1b08d1ae18e94a73e389",
+  "desktop_sha256": "8c1c74a070f347102298c7f9ab269c3e6f0a9d84d01df1cf9905a02b0ee0a6b2",
   "template_sha256": "e434db890a63a01762aecd2fb40b5d42f8683bd4260b94a469b4f0f701904cf0",
   "files": {
     "BGUTILS-LICENSE.txt": "69bb14fee2d102583d6cccdf1e0e2ced4d2bbfd3c42b172e0a9f4e32a9c48c88",

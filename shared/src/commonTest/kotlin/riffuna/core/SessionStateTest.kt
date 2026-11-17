@@ -14,10 +14,87 @@ class SessionStateTest {
         library: SessionLibrary = SessionLibrary(),
         source: SessionSource = SessionSource(),
         audio: SessionAudio = SessionAudio(),
+        recoverNetworkPlayback: Boolean = false,
     ): LocalController {
         val dispatcher = StandardTestDispatcher(testScheduler)
         Dispatchers.setMain(dispatcher)
-        return LocalController(library, source, audio, dispatcher)
+        return LocalController(library, source, audio, dispatcher, recoverNetworkPlayback)
+    }
+
+    @Test
+    fun aFailedRemoteStreamReopensOnceAtTheLastPosition() = runTest {
+        val song = track('a')
+        val source = SessionSource()
+        val audio = SessionAudio()
+        val library = SessionLibrary()
+        val controller = session(library, source, audio, recoverNetworkPlayback = true)
+        try {
+            controller.play(song)
+            advanceUntilIdle()
+            audio.state.value =
+                AudioState(
+                    positionMs = 31_500,
+                    durationMs = 180_000,
+                    playing = true,
+                    seekable = true,
+                )
+            runCurrent()
+            audio.state.value = AudioState(error = "Stream stopped")
+            advanceUntilIdle()
+            assertEquals(listOf(song.id), source.invalidated)
+            assertEquals(2, audio.opened.size)
+            assertFalse(audio.opened.last().autoPlay)
+            assertEquals(31_500L, controller.state.value.positionMs)
+            audio.state.value = AudioState(durationMs = 180_000, seekable = true)
+            runCurrent()
+            assertEquals(listOf(31_500L), audio.seeks)
+            assertEquals(1, audio.resumed)
+            audio.state.value =
+                AudioState(
+                    positionMs = 31_700,
+                    durationMs = 180_000,
+                    playing = true,
+                    seekable = true,
+                )
+            runCurrent()
+            assertEquals(listOf(song), library.plays)
+            audio.state.value = AudioState(error = "Stream stopped")
+            advanceUntilIdle()
+            assertEquals(2, audio.opened.size)
+            assertEquals("Stream stopped", controller.state.value.playbackError)
+        } finally {
+            controller.close()
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun reopenedSessionResumesTheExactOfflineRecordingAtItsSavedPosition() = runTest {
+        val pinned = track('a')
+        val replacement = track('b')
+        val library = SessionLibrary()
+        val source = SessionSource()
+        val audio = SessionAudio()
+        library.selected = pinned
+        library.queued = listOf(pinned) to 0
+        library.replacements[pinned.id] = replacement
+        library.settings["playback_exact"] = "on"
+        library.settings["queue_exact"] = "on"
+        library.settings["playback_position"] = "${pinned.id}:30500"
+        val controller = session(library, source, audio)
+        try {
+            assertEquals(30_500L, controller.state.value.positionMs)
+            controller.toggle()
+            advanceUntilIdle()
+            assertEquals(pinned, controller.state.value.current)
+            assertFalse(audio.opened.last().autoPlay)
+            audio.state.value = AudioState(durationMs = 180_000, seekable = true)
+            runCurrent()
+            assertEquals(listOf(30_500L), audio.seeks)
+        } finally {
+            controller.close()
+            Dispatchers.resetMain()
+        }
     }
 
     @Test

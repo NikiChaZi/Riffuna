@@ -13,6 +13,8 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import riffuna.core.LocalController
 import riffuna.core.isLocalFile
+import riffuna.desktop.ui.LocalOfflineDownloads
+import riffuna.desktop.ui.ProvideWindowsIntegration
 import riffuna.desktop.ui.RiffunaApp
 
 fun main(args: Array<String>) {
@@ -61,13 +63,25 @@ private fun runApp(data: Path) = application {
             MpvMetadataReader(home.resolve("vendor/libmpv/libmpv-2.dll"))::read,
         )
     }
-    val musicSource = remember { DeviceMusicSource(DesktopSource(home, data), localFiles) }
+    val desktopSource = remember { DesktopSource(home, data) }
+    val musicSource = remember { DeviceMusicSource(desktopSource, localFiles) }
     val uiScope = rememberCoroutineScope()
+    val library = remember { SqliteLibrary(data.resolve("library.sqlite3")) }
+    val offlineDownloads = remember {
+        OfflineDownloads(
+            desktopSource.offlineStore,
+            uiScope,
+            library::preferred,
+            library::playlistTracks,
+            desktopSource::saveOffline,
+        )
+    }
     val controller = remember {
         LocalController(
-            SqliteLibrary(data.resolve("library.sqlite3")),
+            library,
             musicSource,
             MpvAudio(home.resolve("vendor/libmpv/libmpv-2.dll")),
+            recoverNetworkPlayback = true,
         )
     }
     val windowState = rememberWindowState(width = 1280.dp, height = 800.dp)
@@ -101,7 +115,7 @@ private fun runApp(data: Path) = application {
                     put("source_provider", "YouTube.js")
                     put("python_runtime", false)
                     put("qt_runtime", false)
-                    put("app_version", "0.3.0")
+                    put("app_version", WindowsReleaseUpdater(home).version)
                     put("remote_server", false)
                     put("window_visible", window.isShowing)
                     put("likes", controller.state.value.likes.size)
@@ -112,65 +126,80 @@ private fun runApp(data: Path) = application {
                 Files.writeString(path, report.toString())
             }
         }
-        RiffunaApp(
-            controller,
-            onOpen = { track ->
-                if (track.isLocalFile)
-                    uiScope.launch {
-                        withContext(Dispatchers.IO) {
+        CompositionLocalProvider(LocalOfflineDownloads provides offlineDownloads) {
+            ProvideWindowsIntegration(home, data, controller, exit) {
+                RiffunaApp(
+                    controller,
+                    catalogSource = desktopSource,
+                    onOpen = { track ->
+                        if (track.isLocalFile)
+                            uiScope.launch {
+                                withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        java.awt.Desktop.getDesktop()
+                                            .open(
+                                                Path.of(java.net.URI(localFiles.resolve(track).uri))
+                                                    .parent
+                                                    .toFile()
+                                            )
+                                    }
+                                }
+                            }
+                        else
                             runCatching {
                                 java.awt.Desktop.getDesktop()
-                                    .open(
-                                        Path.of(java.net.URI(localFiles.resolve(track).uri))
-                                            .parent
-                                            .toFile()
+                                    .browse(
+                                        java.net.URI("https://www.youtube.com/watch?v=" + track.id)
                                     )
                             }
+                    },
+                    onImportMusic = {
+                        val dialog =
+                            javax.swing.JFileChooser().apply {
+                                dialogTitle = "Добавить аудиофайлы или папку"
+                                fileSelectionMode = javax.swing.JFileChooser.FILES_AND_DIRECTORIES
+                                isMultiSelectionEnabled = true
+                                fileFilter =
+                                    javax.swing.filechooser.FileNameExtensionFilter(
+                                        "Аудиофайлы",
+                                        *LocalFilesSource.extensions.toTypedArray(),
+                                    )
+                            }
+                        if (
+                            dialog.showOpenDialog(window) == javax.swing.JFileChooser.APPROVE_OPTION
+                        ) {
+                            val selected =
+                                dialog.selectedFiles.toList().ifEmpty {
+                                    listOfNotNull(dialog.selectedFile)
+                                }
+                            controller.importLocalFiles(selected.map { it.absolutePath })
                         }
-                    }
-                else
-                    runCatching {
-                        java.awt.Desktop.getDesktop()
-                            .browse(java.net.URI("https://www.youtube.com/watch?v=" + track.id))
-                    }
-            },
-            onImportMusic = {
-                val dialog =
-                    javax.swing.JFileChooser().apply {
-                        dialogTitle = "Добавить аудиофайлы или папку"
-                        fileSelectionMode = javax.swing.JFileChooser.FILES_AND_DIRECTORIES
-                        isMultiSelectionEnabled = true
-                        fileFilter =
-                            javax.swing.filechooser.FileNameExtensionFilter(
-                                "Аудиофайлы",
-                                *LocalFilesSource.extensions.toTypedArray(),
+                    },
+                    onImport = {
+                        val dialog =
+                            java.awt.FileDialog(
+                                window,
+                                "Открыть LRC / TTML",
+                                java.awt.FileDialog.LOAD,
                             )
-                    }
-                if (dialog.showOpenDialog(window) == javax.swing.JFileChooser.APPROVE_OPTION) {
-                    val selected =
-                        dialog.selectedFiles.toList().ifEmpty { listOfNotNull(dialog.selectedFile) }
-                    controller.importLocalFiles(selected.map { it.absolutePath })
-                }
-            },
-            onImport = {
-                val dialog =
-                    java.awt.FileDialog(window, "Открыть LRC / TTML", java.awt.FileDialog.LOAD)
-                dialog.setFilenameFilter { _, name ->
-                    name.substringAfterLast('.').lowercase() in setOf("lrc", "ttml", "xml")
-                }
-                dialog.isVisible = true
-                val name = dialog.file
-                if (name != null)
-                    runCatching {
-                        val file = Path.of(dialog.directory, name)
-                        require(Files.size(file) <= 1_048_576)
-                        controller.importLyrics(
-                            Files.readString(file),
-                            name.substringAfterLast('.'),
-                        )
-                    }
-                dialog.dispose()
-            },
-        )
+                        dialog.setFilenameFilter { _, name ->
+                            name.substringAfterLast('.').lowercase() in setOf("lrc", "ttml", "xml")
+                        }
+                        dialog.isVisible = true
+                        val name = dialog.file
+                        if (name != null)
+                            runCatching {
+                                val file = Path.of(dialog.directory, name)
+                                require(Files.size(file) <= 1_048_576)
+                                controller.importLyrics(
+                                    Files.readString(file),
+                                    name.substringAfterLast('.'),
+                                )
+                            }
+                        dialog.dispose()
+                    },
+                )
+            }
+        }
     }
 }

@@ -85,17 +85,18 @@ class SqliteLibrary(val path: Path) : MusicLibrary {
         )
     }
 
-    private fun transaction(block: () -> Unit) {
-        val previous = db.autoCommit
+    private fun <T> transaction(block: () -> T): T {
+        if (!db.autoCommit) return block()
         db.autoCommit = false
         try {
-            block()
+            val result = block()
             db.commit()
+            return result
         } catch (e: Exception) {
             db.rollback()
             throw e
         } finally {
-            db.autoCommit = previous
+            db.autoCommit = true
         }
     }
 
@@ -136,17 +137,19 @@ class SqliteLibrary(val path: Path) : MusicLibrary {
     }
 
     @Synchronized
-    override fun like(track: Track, value: Boolean) = transaction {
-        upsert(track)
-        if (value) update("INSERT OR IGNORE INTO likes(video_id) VALUES(?)", track.id)
-        else update("DELETE FROM likes WHERE video_id=?", track.id)
-    }
+    override fun like(track: Track, value: Boolean) =
+        transaction<Unit> {
+            upsert(track)
+            if (value) update("INSERT OR IGNORE INTO likes(video_id) VALUES(?)", track.id)
+            else update("DELETE FROM likes WHERE video_id=?", track.id)
+        }
 
     @Synchronized
-    override fun recordPlay(track: Track) = transaction {
-        upsert(track)
-        update("INSERT INTO plays(video_id) VALUES(?)", track.id)
-    }
+    override fun recordPlay(track: Track) =
+        transaction<Unit> {
+            upsert(track)
+            update("INSERT INTO plays(video_id) VALUES(?)", track.id)
+        }
 
     @Synchronized
     override fun playlists(): List<PlaylistSummary> =
@@ -275,9 +278,37 @@ class SqliteLibrary(val path: Path) : MusicLibrary {
     @Synchronized
     override fun preferred(track: Track): Track {
         val selected =
-            setting(RecordingIdentity.key(track), setting(RecordingIdentity.legacyKey(track), ""))
+            setting(
+                RecordingIdentity.key(track),
+                setting(RecordingIdentity.legacyKey(track), setting("preferred:${track.id}", "")),
+            )
         return if (selected.isBlank()) track
         else rows("SELECT * FROM tracks WHERE video_id=?", selected).firstOrNull() ?: track
+    }
+
+    @Synchronized
+    override fun recordingChoices(): Map<String, Track> =
+        db.prepareStatement(
+                "SELECT s.key,t.* FROM settings s JOIN tracks t ON t.video_id=s.value " +
+                    "WHERE s.key LIKE 'recording:%' OR s.key LIKE 'preferred:%'"
+            )
+            .use { statement ->
+                statement.executeQuery().use { rows ->
+                    buildMap { while (rows.next()) put(rows.getString("key"), track(rows)) }
+                }
+            }
+
+    @Synchronized
+    override fun putRecordingChoice(key: String, track: Track) = transaction {
+        upsert(track)
+        setSetting(key, track.id)
+    }
+
+    @Synchronized override fun exportCollection(): String = CollectionTransfer.encode(this)
+
+    @Synchronized
+    override fun importCollection(snapshot: CollectionSnapshot): CollectionImport = transaction {
+        mergeCollection(this, snapshot)
     }
 
     @Synchronized

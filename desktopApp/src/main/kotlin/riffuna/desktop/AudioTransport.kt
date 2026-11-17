@@ -130,6 +130,95 @@ class AudioTransport(private val directory: Path) : AutoCloseable {
             }
             .getOrNull()
 
+    internal fun copyCachedOffline(
+        id: String,
+        destination: Path,
+        remaining: Long,
+        progress: (Long, Long) -> Unit,
+    ): OfflineAudio? {
+        val path = cached(id) ?: return null
+        return try {
+            val total = Files.size(path)
+            Files.newInputStream(path).use { input ->
+                writeOffline(destination, total, remaining, progress) { output, report ->
+                    val chunk = ByteArray(256 * 1024)
+                    var written = 0L
+                    while (written < total) {
+                        check(!closed && !Thread.currentThread().isInterrupted)
+                        val read =
+                            input.read(
+                                chunk,
+                                0,
+                                minOf(chunk.size.toLong(), total - written).toInt(),
+                            )
+                        check(read > 0) { "Incomplete cached audio" }
+                        output.write(chunk, 0, read)
+                        written += read
+                        report(written)
+                    }
+                    written
+                }
+            }
+        } catch (_: NoSuchFileException) {
+            // The automatic cache can evict a file between verification and opening it.
+            null
+        }
+    }
+
+    internal fun downloadOffline(
+        id: String,
+        source: AudioSource,
+        destination: Path,
+        remaining: Long,
+        progress: (Long, Long) -> Unit,
+    ): OfflineAudio {
+        val uri = URI(source.uri)
+        require(uri.scheme == "https" || (uri.scheme == "http" && uri.host == "127.0.0.1"))
+        val buffer = Buffer(id, source)
+        try {
+            buffer.block(0)
+            return writeOffline(destination, buffer.total, remaining, progress) { output, report ->
+                var written = 0L
+                for (index in 0..((buffer.total - 1) / blockSize).toInt()) {
+                    check(!Thread.currentThread().isInterrupted)
+                    val bytes = buffer.block(index)
+                    output.write(bytes)
+                    written += bytes.size
+                    report(written)
+                }
+                written
+            }
+        } finally {
+            buffer.cancel()
+        }
+    }
+
+    private fun writeOffline(
+        destination: Path,
+        total: Long,
+        remaining: Long,
+        progress: (Long, Long) -> Unit,
+        write: (java.io.OutputStream, (Long) -> Unit) -> Long,
+    ): OfflineAudio {
+        require(total in 1..diskLimit) { "Unsupported offline audio size" }
+        if (total > remaining) throw OfflineStorageFull()
+        Files.createDirectories(destination.parent)
+        val temporary = Files.createTempFile(destination.parent, ".download-", ".part")
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            progress(0, total)
+            val written =
+                java.security.DigestOutputStream(Files.newOutputStream(temporary), digest).use {
+                    write(it) { bytes -> progress(bytes, total) }
+                }
+            check(written == total && !closed && !Thread.currentThread().isInterrupted)
+            moveOfflineFile(temporary, destination)
+            return OfflineAudio(written, digest.digest().joinToString("") { "%02x".format(it) })
+        } finally {
+            Files.deleteIfExists(temporary)
+        }
+    }
+
     @Synchronized
     fun releaseCurrent() {
         activeToken = null

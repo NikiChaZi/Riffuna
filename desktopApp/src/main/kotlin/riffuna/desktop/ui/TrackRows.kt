@@ -224,6 +224,7 @@ fun TrackRow(
                     },
                     leadingIcon = { Icon(Icons.Outlined.LibraryMusic, null) },
                 )
+                OfflineTrackMenuItem(track) { menu = false }
                 HorizontalDivider()
                 if (!track.isLocalFile)
                     DropdownMenuItem(

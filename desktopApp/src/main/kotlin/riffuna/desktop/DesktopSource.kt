@@ -9,13 +9,15 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import riffuna.core.*
 
-class DesktopSource(private val home: Path, private val data: Path) : MusicSource {
+class DesktopSource(private val home: Path, private val data: Path) :
+    MusicSource, DesktopCatalogSource {
     private class SourceFailure(val code: String, detail: String = "") :
         IllegalStateException("Source request failed: $code $detail")
 
     private val json = Json { ignoreUnknownKeys = true }
     private val streams = linkedMapOf<String, Pair<Long, AudioSource>>()
     private val transport = AudioTransport(data.resolve("audio-cache"))
+    internal val offlineStore = OfflineStore(data.resolve("offline-audio"))
     private val lyricsRepository = LyricsRepository(data.resolve("lyrics"))
     private val model = lazy {
         MusicModel(home.resolve("music-model"), ArtistTags(data.resolve("artist-tags"))::fetch)
@@ -129,9 +131,11 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
     }
 
     private val searchWorker = Worker()
+    private val catalogWorker = Worker()
     private val audioWorker = Worker()
     private val prefetchWorker = Worker()
     private val rangeWorker = Worker()
+    private val downloadWorker = Worker()
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val warming = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -164,6 +168,9 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
         val worker =
             when (body["action"]?.jsonPrimitive?.content) {
                 "resolve" -> audioWorker
+                "catalog_search",
+                "catalog_artist",
+                "catalog_album" -> catalogWorker
                 else -> searchWorker
             }
         for (attempt in 0..1) try {
@@ -195,9 +202,47 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
         if (model.isInitialized()) model.value.close()
         transport.close()
         searchWorker.close()
+        catalogWorker.close()
         audioWorker.close()
         prefetchWorker.close()
         rangeWorker.close()
+        downloadWorker.close()
+    }
+
+    override suspend fun searchCatalog(query: String, kind: CatalogKind): List<CatalogEntry> {
+        val text = query.trim()
+        if (text.isBlank() || text.length > 500 || text.contains("://")) return emptyList()
+        return request(
+                buildJsonObject {
+                    put("action", "catalog_search")
+                    put("query", text)
+                    put("kind", if (kind == CatalogKind.ARTIST) "artist" else "album")
+                }
+            )
+            .catalogRows("entries")
+            .mapNotNull { it.catalogEntry(kind) }
+    }
+
+    override suspend fun catalogPage(entry: CatalogEntry): CatalogPage {
+        val result =
+            request(
+                buildJsonObject {
+                    put(
+                        "action",
+                        if (entry.kind == CatalogKind.ARTIST) "catalog_artist" else "catalog_album",
+                    )
+                    put("id", entry.id)
+                }
+            )
+        return CatalogPage(
+            entry.copy(
+                title = result.catalogText("title").ifBlank { entry.title },
+                thumbnail = result.catalogText("thumbnail").ifBlank { entry.thumbnail },
+            ),
+            result.catalogRows("tracks").mapNotNull(MusicRules::track),
+            result.catalogRows("releases").mapNotNull { it.catalogEntry(CatalogKind.ALBUM) },
+            (result["artist"] as? JsonObject)?.catalogEntry(CatalogKind.ARTIST),
+        )
     }
 
     override suspend fun search(query: String, limit: Int): List<Track> =
@@ -360,30 +405,48 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
     }
 
     override suspend fun resolve(track: Track): AudioSource {
-        withContext(Dispatchers.IO) { transport.cached(track.id) }
+        withContext(Dispatchers.IO) { offlineStore.find(track.id) ?: transport.cached(track.id) }
             ?.let {
                 transport.releaseCurrent()
                 return AudioSource(it.toUri().toString())
             }
         prepareRangeBridge()
+        return transport.bind(track.id, resolveStream(track))
+    }
+
+    internal suspend fun saveOffline(
+        track: Track,
+        destination: Path,
+        remaining: Long,
+        progress: (Long, Long) -> Unit,
+    ): OfflineAudio {
+        runInterruptible(Dispatchers.IO) {
+                transport.copyCachedOffline(track.id, destination, remaining, progress)
+            }
+            ?.let {
+                return it
+            }
+        prepareRangeBridge()
+        val source = resolveStream(track, forDownload = true)
+        return runInterruptible(Dispatchers.IO) {
+            transport.downloadOffline(track.id, source, destination, remaining, progress)
+        }
+    }
+
+    private suspend fun resolveStream(track: Track, forDownload: Boolean = false): AudioSource {
         val now = Instant.now().epochSecond
         synchronized(streams) {
             streams[track.id]
                 ?.takeIf { it.first > now }
                 ?.let {
-                    return transport.bind(
-                        track.id,
-                        it.second.copy(proxy = DesktopNetwork.proxyUrl()),
-                    )
+                    return it.second.copy(proxy = DesktopNetwork.proxyUrl())
                 }
         }
-        val result =
-            request(
-                buildJsonObject {
-                    put("action", "resolve")
-                    put("track", json.encodeToJsonElement(track))
-                }
-            )
+        val payload = buildJsonObject {
+            put("action", "resolve")
+            put("track", json.encodeToJsonElement(track))
+        }
+        val result = if (forDownload) downloadWorker.execute(payload) else request(payload)
         val value =
             AudioSource(
                 result["uri"]!!.jsonPrimitive.content,
@@ -397,7 +460,7 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
             streams[track.id] = (now + 240) to value
             while (streams.size > 32) streams.remove(streams.keys.first())
         }
-        return transport.bind(track.id, value)
+        return value
     }
 
     override suspend fun lyrics(track: Track) = lyricsPacket(track).lines
@@ -412,7 +475,12 @@ class DesktopSource(private val home: Path, private val data: Path) : MusicSourc
         withContext(Dispatchers.IO) { lyricsRepository.import(track, text, format) }
 
     override suspend fun prefetch(track: Track) {
-        if (withContext(Dispatchers.IO) { transport.cached(track.id) } != null) return
+        if (
+            withContext(Dispatchers.IO) {
+                offlineStore.find(track.id) ?: transport.cached(track.id)
+            } != null
+        )
+            return
         prepareRangeBridge()
         val value =
             prefetchWorker.execute(

@@ -103,6 +103,9 @@ fun Sidebar(
     onSettings: () -> Unit,
     onHelp: () -> Unit,
     onImportMusic: () -> Unit,
+    onOpenDownloads: (() -> Unit)? = null,
+    downloadsSelected: Boolean = false,
+    onLibraryNavigation: () -> Unit = {},
 ) {
     Column(
         Modifier.width(188.dp)
@@ -140,7 +143,10 @@ fun Sidebar(
                     Triple(LibraryView.RESONANCE, "Резонанс", Icons.Outlined.GraphicEq),
                 )
                 .forEach { (key, title, icon) ->
-                    NavigationRow(title, icon, state.view == key) { controller.showView(key) }
+                    NavigationRow(title, icon, !downloadsSelected && state.view == key) {
+                        onLibraryNavigation()
+                        controller.showView(key)
+                    }
                 }
             Text(
                 "МОЯ МУЗЫКА",
@@ -154,8 +160,18 @@ fun Sidebar(
                     Triple(LibraryView.LOCAL, "Локальные файлы", Icons.Outlined.FolderOpen),
                 )
                 .forEach { (key, title, icon) ->
-                    NavigationRow(title, icon, state.view == key) { controller.showView(key) }
+                    NavigationRow(title, icon, !downloadsSelected && state.view == key) {
+                        onLibraryNavigation()
+                        controller.showView(key)
+                    }
                 }
+            if (onOpenDownloads != null)
+                NavigationRow(
+                    "Скачанное",
+                    Icons.Outlined.Download,
+                    downloadsSelected,
+                    onOpenDownloads,
+                )
             TextButton(onClick = onImportMusic, enabled = !state.localImporting) {
                 Icon(Icons.Outlined.FolderOpen, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
@@ -176,8 +192,9 @@ fun Sidebar(
             NavigationRow(
                 "Все плейлисты",
                 Icons.Outlined.LibraryMusic,
-                state.view == LibraryView.PLAYLISTS,
+                !downloadsSelected && state.view == LibraryView.PLAYLISTS,
             ) {
+                onLibraryNavigation()
                 controller.showView(LibraryView.PLAYLISTS)
             }
             state.playlists.forEach { playlist ->
@@ -185,10 +202,14 @@ fun Sidebar(
                     Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .background(
-                            if (state.playlistId == playlist.id) RiffunaColors.Raised
+                            if (!downloadsSelected && state.playlistId == playlist.id)
+                                RiffunaColors.Raised
                             else Color.Transparent
                         )
-                        .clickable { controller.openPlaylist(playlist.id) }
+                        .clickable {
+                            onLibraryNavigation()
+                            controller.openPlaylist(playlist.id)
+                        }
                         .padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -614,6 +635,17 @@ fun TracksScreen(
                         { listMenu = true },
                     )
                     DropdownMenu(listMenu, { listMenu = false }) {
+                        LocalOfflineDownloads.current?.let { downloads ->
+                            DropdownMenuItem(
+                                { Text("Сохранить плейлист для офлайна") },
+                                {
+                                    downloads.savePlaylist(playlist.id)
+                                    listMenu = false
+                                },
+                                leadingIcon = { Icon(Icons.Outlined.Download, null) },
+                                enabled = playlist.trackCount > 0,
+                            )
+                        }
                         DropdownMenuItem(
                             { Text("Изменить название и описание") },
                             {
@@ -644,6 +676,16 @@ fun TracksScreen(
                         )
                     }
                 }
+            if (state.view == LibraryView.LIKES) {
+                LocalOfflineDownloads.current?.let { downloads ->
+                    ActionIcon(
+                        Icons.Outlined.Download,
+                        "Сохранить понравившееся для офлайна",
+                        { downloads.save(state.likes) },
+                        enabled = state.likes.any { !it.isLocalFile },
+                    )
+                }
+            }
             Spacer(Modifier.weight(1f))
             Box {
                 TextButton(onClick = { sortMenu = true }) {

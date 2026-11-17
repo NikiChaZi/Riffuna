@@ -15,7 +15,7 @@ class SourceIntegrationTest {
             Path.of(System.getProperty("user.dir")).parent.resolve("build/desktop-resources/common")
         val data = Files.createTempDirectory("riffuna-source-smoke")
         val source = DesktopSource(home, data)
-        val audio = MpvAudio(home.resolve("vendor/libmpv/libmpv-2.dll"))
+        val audio = MpvAudio(home.resolve("vendor/libmpv/libmpv-2.dll"), audioDriver = "null")
         try {
             val capability = source.request(buildJsonObject { put("action", "capabilities") })
             assertEquals(false, capability["qt_loaded"]!!.jsonPrimitive.boolean)
@@ -34,6 +34,7 @@ class SourceIntegrationTest {
                 "LIVE_SEARCH_OK results=${tracks.size} duration=${track.duration} elapsed_ms=${(System.nanoTime()-started)/1_000_000}"
             )
             println("LIVE_PROXY_BEFORE_AUDIO configured=${DesktopNetwork.proxyUrl().isNotBlank()}")
+            val coldStart = System.nanoTime()
             val stream = withTimeout(120000) { source.resolve(track) }
             assertTrue(stream.uri.startsWith("http://127.0.0.1:") || stream.uri.startsWith("file:"))
             println("LIVE_RESOLVE_OK elapsed_ms=${(System.nanoTime()-started)/1_000_000}")
@@ -41,6 +42,7 @@ class SourceIntegrationTest {
             audio.open(stream)
             withTimeout(40000) { while (audio.state.value.positionMs < 500) delay(100) }
             println("LIVE_PLAY_STATE ${audio.state.value}")
+            println("LIVE_COLD_START_MS=${(System.nanoTime() - coldStart) / 1_000_000}")
             audio.pause()
             delay(200)
             audio.seek(20000)
@@ -53,6 +55,17 @@ class SourceIntegrationTest {
             audio.resume()
             withTimeout(10000) { while (audio.state.value.positionMs < 20500) delay(100) }
             assertTrue(audio.state.value.playing)
+            val next =
+                withTimeout(120_000) { source.search("Дора Дора дура", 5) }
+                    .first { it.id != track.id }
+            val nextStream = withTimeout(120_000) { source.resolve(next) }
+            audio.open(nextStream)
+            withTimeout(40_000) {
+                while (
+                    !audio.state.value.playing || audio.state.value.positionMs !in 250..5000
+                ) delay(100)
+            }
+            println("LIVE_NEXT_OK")
             println(
                 "LIVE_SOURCE_OK results=${tracks.size} track=${track.title} elapsed_seconds=${(System.nanoTime()-started)/1_000_000_000}"
             )

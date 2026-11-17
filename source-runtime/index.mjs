@@ -100,6 +100,105 @@ async function loadPlayer(api){
  try{await fs.mkdir(cacheDirectory,{recursive:true});await fs.writeFile(temporary,JSON.stringify({id:player.player_id,at:verifiedAt}));await fs.rename(temporary,playerManifest);}catch{}finally{await fs.rm(temporary,{force:true}).catch(()=>{});}
  return player;
 }
+function catalogName(value) {
+ return String(value?.text ?? value ?? '').trim();
+}
+
+function catalogThumbnail(node) {
+ const values = node?.thumbnails ?? node?.thumbnail?.contents ?? node?.thumbnail ?? node?.contents;
+ return Array.isArray(values) ? thumb(values) : '';
+}
+
+function catalogEntry(row, kind, shelf = '') {
+ if (row.item_type !== kind && row.type !== 'MusicCardShelf') return null;
+ const id = row.id || row.endpoint?.payload?.browseId || row.on_tap?.payload?.browseId || '';
+ const title = catalogName(row.name || row.title);
+ const valid = kind === 'artist' ? /^UC[\w-]{22}$/.test(id) : /^MPR[\w-]{1,90}$/.test(id);
+ if (!valid || !title) return null;
+ const artist = row.author?.name || row.artists?.map(item => item.name).filter(Boolean).join(', ') || '';
+ const subtitle = row.subtitle || row.flex_columns?.[1]?.title;
+ const hint = catalogName(subtitle?.runs?.[0]?.text);
+ const type = /\b(?:single|singles|ep)\b/i.test(hint + ' ' + shelf) ? 'single' : 'album';
+ return { id, title, artist, type, year: catalogName(row.year), thumbnail: catalogThumbnail(row) };
+}
+
+function distinctCatalogRows(rows) {
+ return [...new Map(rows.filter(Boolean).map(row => [row.id, row])).values()];
+}
+
+async function catalogSearch(query, kind) {
+ if (!query || query.length > 500 || !['artist', 'album'].includes(kind)) throw Error('InvalidQuery');
+ const page = await (await yt()).music.search(query, { type: kind });
+ const rows = page.contents.flatMap(section =>
+  section.type === 'MusicCardShelf' ? [section, ...(section.contents || [])] : section.contents || []
+ );
+ return { entries: distinctCatalogRows(rows.map(row => catalogEntry(row, kind))).slice(0, 40) };
+}
+
+function catalogTrack(row, artist, artwork, album = false) {
+ // YouTube Music can point a numbered album track to the artist's official video.
+ // Accept that source only in the release itself, never as a generic search result.
+ const payload = row.flex_columns?.[0]?.title?.runs?.[0]?.endpoint?.payload;
+ const videoType = payload?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType;
+ const albumAudio = album && row.item_type === 'video' && /^\d+$/.test(catalogName(row.index))
+  && payload?.videoId === row.id && videoType === 'MUSIC_VIDEO_TYPE_OMV';
+ if (row.item_type !== 'song' && !albumAudio) return null;
+ const track = musicRow(row);
+ if (!track || !/^[\w-]{11}$/.test(track.id)) return null;
+ return {
+  ...track,
+  musicType: albumAudio ? 'MUSIC_VIDEO_TYPE_OMV' : track.musicType,
+  artist: track.artist === 'YouTube' ? artist || track.artist : track.artist,
+  thumbnail: track.thumbnail || artwork,
+ };
+}
+
+async function catalogArtist(id) {
+ if (!/^UC[\w-]{22}$/.test(id)) throw Error('InvalidId');
+ const page = await (await yt()).music.getArtist(id);
+ const title = catalogName(page.header?.title);
+ const thumbnail = catalogThumbnail(page.header) || thumb(page.header?.foreground_thumbnail);
+ // The artist endpoint publishes popular tracks in MusicShelf, and releases in carousel shelves.
+ const tracks = page.sections
+  .filter(section => section.type === 'MusicShelf')
+  .flatMap(section => section.contents || [])
+  .map(row => catalogTrack(row, title, thumbnail));
+ const releases = page.sections
+  .filter(section => section.type === 'MusicCarouselShelf')
+  .filter(section => /^(albums|singles(?:\s*(?:&|and)\s*eps)?|eps|releases)$/i.test(catalogName(section.header?.title)))
+  .flatMap(section => (section.contents || []).map(row => catalogEntry(row, 'album', catalogName(section.header?.title))));
+ return {
+  title,
+  thumbnail,
+  tracks: distinctCatalogRows(tracks).slice(0, 40),
+  releases: distinctCatalogRows(releases).slice(0, 80),
+ };
+}
+
+async function catalogAlbum(id) {
+ if (!/^MPR[\w-]{1,90}$/.test(id)) throw Error('InvalidId');
+ const page = await (await yt()).music.getAlbum(id);
+ const title = catalogName(page.header?.title);
+ const thumbnail = catalogThumbnail(page.header);
+ const authorRun = page.header?.strapline_text_one?.runs?.find(run =>
+  /^UC[\w-]{22}$/.test(run.endpoint?.payload?.browseId || '')
+ );
+ const author = page.header?.author ?? (authorRun && {
+  name: authorRun.text,
+  channel_id: authorRun.endpoint.payload.browseId,
+ });
+ const artist = catalogName(author?.name);
+ return {
+  title,
+  thumbnail,
+  artist: artist && /^UC[\w-]{22}$/.test(author?.channel_id || '')
+   ? { id: author.channel_id, title: artist, thumbnail: catalogThumbnail(page.header?.strapline_thumbnail) }
+   : null,
+  tracks: distinctCatalogRows(page.contents.map(row => catalogTrack(row, artist, thumbnail, true))),
+ };
+}
+
+
 const yt=async()=>session??=createSession();
 const searches=new Map();const metadata=new Map();const catalogIds=new Set();
 function thumb(values){
@@ -205,6 +304,9 @@ async function execute(request){
  case 'range_bridge':return {uri:await rangeBridge()};
  case 'prepare_playback':{const api=await yt();await Promise.all([ensurePlayer(api),mintPlaybackToken.prepare()]);return {ready:true};}
  case 'capabilities':return {qt_loaded:false,python:false,protocol:2,provider:'youtubei.js',version:'18.3.0'};
+ case 'catalog_search':return catalogSearch(String(request.query||''),request.kind);
+ case 'catalog_artist':return catalogArtist(String(request.id||''));
+ case 'catalog_album':return catalogAlbum(String(request.id||''));
  case 'search':return musicSearch(String(request.query||''),Math.min(180,Math.max(1,request.limit||80)));
  case 'videos':return videoSearch(String(request.query||''));
  case 'metadata':return info(request.id);

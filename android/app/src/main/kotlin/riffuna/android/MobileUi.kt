@@ -136,7 +136,12 @@ private fun time(ms: Long): String {
 }
 
 @Composable
-internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
+internal fun MobileApp(
+    controller: LocalController,
+    importFiles: () -> Unit,
+    onImportCollection: () -> Unit,
+    onExportCollection: () -> Unit,
+) {
     val screen =
         remember(controller) { controller.state.map { it.screenSnapshot() }.distinctUntilChanged() }
     val state by screen.collectAsStateWithLifecycle(AppState())
@@ -674,10 +679,26 @@ internal fun MobileApp(controller: LocalController, importFiles: () -> Unit) {
                         Switch(state.reducedMotion, controller::setReducedMotion)
                     }
                     Text(
-                        "Для YouTube требуется доступ к сервису через сеть телефона. Синхронизации с библиотекой Windows пока нет.",
+                        "Перенос коллекции включает лайки, плейлисты и выбранные версии записей.",
                         color = Color(0xFFAFBAAD),
                         fontSize = 13.sp,
                     )
+                    TextButton(
+                        onClick = {
+                            settings = false
+                            onExportCollection()
+                        }
+                    ) {
+                        Text("Экспортировать коллекцию")
+                    }
+                    TextButton(
+                        onClick = {
+                            settings = false
+                            onImportCollection()
+                        }
+                    ) {
+                        Text("Импортировать коллекцию")
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { settings = false }) { Text("Готово") } },

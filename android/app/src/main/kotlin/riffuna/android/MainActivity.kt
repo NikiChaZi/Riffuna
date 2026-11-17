@@ -8,6 +8,12 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import riffuna.catalog.readRiffunaCollection
 
 class MainActivity : ComponentActivity() {
     private val graph
@@ -27,6 +33,47 @@ class MainActivity : ComponentActivity() {
                 }
             graph.controller.importLocalFiles(accepted.map { it.toString() })
         }
+    private val importCollection =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null)
+                lifecycleScope.launch {
+                    try {
+                        val content =
+                            withContext(Dispatchers.IO) {
+                                checkNotNull(contentResolver.openInputStream(uri)).use {
+                                    it.readRiffunaCollection()
+                                }
+                            }
+                        graph.controller.importCollection(content)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        graph.controller.notifyUser("Не удалось прочитать коллекцию")
+                    }
+                }
+        }
+
+    private val exportCollection =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri
+            ->
+            if (uri != null)
+                lifecycleScope.launch {
+                    try {
+                        val content = graph.controller.exportCollection()
+                        withContext(Dispatchers.IO) {
+                            checkNotNull(contentResolver.openOutputStream(uri, "wt")).use {
+                                it.write(content.encodeToByteArray())
+                            }
+                        }
+                        graph.controller.notifyUser("Коллекция сохранена")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        graph.controller.notifyUser("Не удалось сохранить коллекцию")
+                    }
+                }
+        }
+
     private val notifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
@@ -44,7 +91,16 @@ class MainActivity : ComponentActivity() {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent {
-            RiffunaTheme { MobileApp(graph.controller) { documents.launch(arrayOf("audio/*")) } }
+            RiffunaTheme {
+                MobileApp(
+                    graph.controller,
+                    importFiles = { documents.launch(arrayOf("audio/*")) },
+                    onImportCollection = {
+                        importCollection.launch(arrayOf("application/json", "text/plain"))
+                    },
+                    onExportCollection = { exportCollection.launch("Riffuna-collection.json") },
+                )
+            }
         }
     }
 
