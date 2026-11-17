@@ -47,4 +47,4 @@ python scripts/export_music_onnx.py --source PATH_TO_TRAINED_MUSIC_MODEL --targe
 
 Android/Media3 и APK, синхронизация устройств, отдельная система загрузок, системные медиаклавиши/Windows Media Controls, папки плейлистов и расширенные карточки артистов/альбомов не входили в реализованную Qt-базу и пока не выдаются за готовые функции.
 
-[Итоговые результаты проверки установленной Windows-сборки](kotlin-qa.md).
+[Отчёт по установленной Windows-сборке 0.2.0](https://github.com/NikiChaZi/Riffuna/blob/v0.2.0/docs/kotlin-qa.md) и [аудит 0.2.1](https://github.com/NikiChaZi/Riffuna/blob/v0.2.1/docs/maintenance-audit.md) сохранены в тегах.
