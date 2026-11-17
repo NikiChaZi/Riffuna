@@ -262,7 +262,7 @@ class BrowserMusicSource(
                             .toString()
                     }
             } catch (error: Exception) {
-                android.util.Log.w("RiffunaSource", "HTTPS failure=" + error.javaClass.simpleName)
+                android.util.Log.w("RiffunaSource", sourceFailureLog(error))
                 "{\"error\":true}"
             } finally {
                 networkCalls.remove(id)

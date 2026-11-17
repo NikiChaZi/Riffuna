@@ -84,6 +84,12 @@ try {
     Copy-Item -LiteralPath LICENSE,LICENSING.md,THIRD_PARTY_NOTICES.md -Destination $taskOutput -Force
     $taskForbidden=Get-ChildItem -LiteralPath $taskRuntime -Recurse -File|Where-Object{$_.Name -match '^(python.*\.dll|RiffunaSource\.exe|Qt[56].*\.dll)$' -or $_.Extension -in '.pyc','.pyo'}
     if($taskForbidden){throw 'Legacy Python/Qt files entered the package.'}
+    $taskInstaller=Join-Path $taskRoot ("desktopApp\build\compose\binaries\main\exe\Riffuna-$taskVersion.exe")
+    $taskWixDark=Join-Path $taskRoot 'build\wix311\dark.exe'
+    & python scripts/check_release_payload.py $taskOutput
+    if($LASTEXITCODE -ne 0){throw 'Portable Windows package privacy check failed.'}
+    & python scripts/check_release_payload.py --installer --dark $taskWixDark $taskInstaller
+    if($LASTEXITCODE -ne 0){throw 'Windows installer privacy check failed.'}
     $taskDiagnosticReport=Join-Path $taskRoot '.test-data\native-package-report.json'
     if(Test-Path -LiteralPath $taskDiagnosticReport){Remove-Item -LiteralPath $taskDiagnosticReport -Force}
     $taskDiagnostic=Start-Process -FilePath (Join-Path $taskRuntime 'Riffuna.exe') -ArgumentList @('--diagnose','--report',('"'+$taskDiagnosticReport+'"')) -WindowStyle Hidden -PassThru

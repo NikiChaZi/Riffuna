@@ -44,6 +44,7 @@ class DesktopSource(private val home: Path, private val data: Path) :
                             "YouTube component missing"
                         }
                         Files.createDirectories(data)
+                        val traceEnabled = System.getenv("RIFFUNA_SOURCE_TRACE") == "1"
                         val builder =
                             ProcessBuilder(
                                     executable.toString(),
@@ -53,10 +54,7 @@ class DesktopSource(private val home: Path, private val data: Path) :
                                 )
                                 .directory(data.toFile())
                                 .redirectError(
-                                    if (System.getenv("RIFFUNA_SOURCE_TRACE") == "1")
-                                        ProcessBuilder.Redirect.appendTo(
-                                            data.resolve("source-trace.log").toFile()
-                                        )
+                                    if (traceEnabled) ProcessBuilder.Redirect.PIPE
                                     else ProcessBuilder.Redirect.DISCARD
                                 )
                         builder.environment().remove("NODE_USE_ENV_PROXY")
@@ -67,6 +65,7 @@ class DesktopSource(private val home: Path, private val data: Path) :
                                 builder.environment()["HTTP_PROXY"] = proxy
                             }
                         active = builder.start()
+                        if (traceEnabled) collectSourceTrace(active)
                         process = active
                         writer = active.outputStream.bufferedWriter(Charsets.UTF_8)
                         reader = active.inputStream.bufferedReader(Charsets.UTF_8)
@@ -128,6 +127,30 @@ class DesktopSource(private val home: Path, private val data: Path) :
             writer = null
             reader = null
         }
+    }
+
+    private fun collectSourceTrace(worker: Process) {
+        Thread(
+                {
+                    runCatching {
+                        worker.errorStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                            lines.mapNotNull(::safeSourceTrace).forEach { line ->
+                                runCatching {
+                                    Files.writeString(
+                                        data.resolve("source-trace.log"),
+                                        line + "\n",
+                                        java.nio.file.StandardOpenOption.CREATE,
+                                        java.nio.file.StandardOpenOption.APPEND,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                "Riffuna source diagnostics",
+            )
+            .apply { isDaemon = true }
+            .start()
     }
 
     private val searchWorker = Worker()

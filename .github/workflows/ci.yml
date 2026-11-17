@@ -36,10 +36,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native dependency download failed' }
           New-Item -ItemType Directory -Force build/desktop-resources/common/vendor/node | Out-Null
           Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination build/desktop-resources/common/vendor/node/node.exe
-      - name: Format and offline Kotlin tests
-        run: ./gradlew.bat spotlessCheck :shared:jvmTest :desktopApp:test --no-daemon --console=plain
+      - name: Format, offline Kotlin tests and privacy checks
+        shell: pwsh
+        run: ./scripts/check_ci_output.ps1 Windows
+      - name: Verify test reports before upload
+        run: python scripts/check_release_payload.py shared/build/test-results desktopApp/build/test-results
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: kotlin-test-results
           path: |
@@ -55,3 +57,5 @@ jobs:
           python-version: '3.12'
       - run: uv sync --frozen --extra dev --extra evaluation
       - run: uv run --frozen --extra dev --extra evaluation pytest
+      - name: Verify release guard
+        run: python -m unittest discover -s scripts -p test_check_release_payload.py

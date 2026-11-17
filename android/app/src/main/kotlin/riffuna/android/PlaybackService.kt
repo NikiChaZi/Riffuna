@@ -208,10 +208,7 @@ class PlaybackService : MediaSessionService() {
             else startForeground(preparingId, notification)
             preparingInForeground = true
         } catch (error: IllegalStateException) {
-            android.util.Log.w(
-                "RiffunaAudio",
-                "Preparing foreground unavailable: " + error.javaClass.simpleName,
-            )
+            android.util.Log.w("RiffunaAudio", foregroundFailureLog(error))
         }
     }
 

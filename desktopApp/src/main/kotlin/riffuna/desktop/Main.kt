@@ -10,7 +10,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import javax.imageio.ImageIO
 import kotlinx.coroutines.*
-import kotlinx.serialization.json.*
 import riffuna.core.LocalController
 import riffuna.core.isLocalFile
 import riffuna.desktop.ui.LocalOfflineDownloads
@@ -104,23 +103,7 @@ private fun runApp(data: Path) = application {
             }
             delay(200)
             System.getenv("MUSICDESK_UI_REPORT")?.let { file ->
-                val report = buildJsonObject {
-                    put("ui", "Compose Multiplatform")
-                    put("language", "Kotlin")
-                    put(
-                        "database_path",
-                        data.resolve("library.sqlite3").toAbsolutePath().toString(),
-                    )
-                    put("audio_backend", "libmpv/JNA")
-                    put("source_provider", "YouTube.js")
-                    put("python_runtime", false)
-                    put("qt_runtime", false)
-                    put("app_version", WindowsReleaseUpdater(home).version)
-                    put("remote_server", false)
-                    put("window_visible", window.isShowing)
-                    put("likes", controller.state.value.likes.size)
-                    put("queue", controller.state.value.queue.size)
-                }
+                val report = startupReport(WindowsReleaseUpdater(home).version, window.isShowing)
                 val path = Path.of(file)
                 Files.createDirectories(path.parent)
                 Files.writeString(path, report.toString())
