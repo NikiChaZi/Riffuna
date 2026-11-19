@@ -1248,7 +1248,7 @@ private fun TrackRow(
                             openArtist(track)
                         },
                     )
-                if (download != null && !track.id.startsWith("local:"))
+                if (download != null && !track.isLocalFile)
                     DropdownMenuItem(
                         text = { Text("Скачать трек") },
                         onClick = {
@@ -1256,7 +1256,7 @@ private fun TrackRow(
                             download(track)
                         },
                     )
-                if (!track.id.startsWith("local:"))
+                if (!track.isLocalFile)
                     DropdownMenuItem(
                         text = { Text("Другие записи") },
                         onClick = {
