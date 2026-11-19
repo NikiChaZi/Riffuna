@@ -45,11 +45,18 @@ async function ensurePlayer(api){
  return pending;
 }
 const searches=new Map();const metadata=new Map();const catalogIds=new Set();
+const randomUUID=()=>globalThis.crypto.randomUUID?.()??Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)),value=>value.toString(16).padStart(2,'0')).join('');
+/* RIFFUNA_CATALOG_NAVIGATION */
 /* RIFFUNA_CATALOG */
 /* RIFFUNA_RESOLVE */
 
 async function execute(r){
  if(r.action==='search'){const result=await musicSearch(String(r.query||''),Math.min(180,Math.max(1,r.limit||40)));setTimeout(()=>Promise.all([yt().then(ensurePlayer),mintPlaybackToken.prepare()]).catch(()=>{}),0);return result;}
+ if(r.action==='catalog_search')return catalogSearch(String(r.query||''),r.kind);
+ if(r.action==='catalog_artist')return catalogArtist(String(r.id||''));
+ if(r.action==='catalog_artist_tracks')return catalogArtistTracks(String(r.id||''),String(r.cursor||''));
+ if(r.action==='catalog_track_artists')return catalogArtistsForTrack(String(r.id||''));
+ if(r.action==='catalog_album')return catalogAlbum(String(r.id||''));
  if(r.action==='resolve')return resolve(r.id,'webm');
  if(r.action==='metadata')return info(r.id);
  if(r.action==='videos')return videoSearch(String(r.query||''));

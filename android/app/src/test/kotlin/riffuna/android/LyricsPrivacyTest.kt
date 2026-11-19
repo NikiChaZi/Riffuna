@@ -14,6 +14,34 @@ import riffuna.core.Track
 
 class LyricsPrivacyTest {
     @Test
+    fun importedLyricsStayLocalAndSurviveAnInvalidReplacement() = runBlocking {
+        val cache = mutableMapOf<String, String>()
+        val http =
+            OkHttpClient.Builder().addInterceptor { error("Unexpected network request") }.build()
+        val track =
+            Track(
+                "local-0123456789abcdef0123456789abcdef",
+                "Synthetic song",
+                "Synthetic artist",
+                12,
+                "content://PRIVATE_PROFILE_FIXTURE/document/1",
+            )
+        val repository =
+            AndroidLyrics(http, { cache[it].orEmpty() }, { key, value -> cache[key] = value })
+        val imported = repository.importLocal(track, "[00:02.00]Synthetic line", "lrc")
+        assertEquals("local_lrc", imported.timingSource)
+        assertEquals(2_000L, imported.lines.single().startMs)
+        assertTrue(imported.approximateWords)
+        assertFailsWith<IllegalArgumentException> {
+            repository.importLocal(track, "bad file", "lrc")
+        }
+        val reopened =
+            AndroidLyrics(http, { cache[it].orEmpty() }, { key, value -> cache[key] = value })
+        assertEquals(imported, reopened.load(track, force = true))
+        assertTrue(cache.values.none { "PRIVATE_PROFILE_FIXTURE" in it })
+    }
+
+    @Test
     fun diagnosticLogBodiesDropOriginalExceptionDetails() {
         val failure =
             IOException(

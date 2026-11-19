@@ -3,11 +3,11 @@
   "upstream": "https://github.com/LuanRT/YouTube.js",
   "desktop_reference": "source-runtime/index.mjs",
   "desktop_sha256": "816d783d8ab1c7b2d6d806b1c46375eee37304da92fc485b08e3534393934565",
-  "template_sha256": "e434db890a63a01762aecd2fb40b5d42f8683bd4260b94a469b4f0f701904cf0",
+  "template_sha256": "687d61a5869072dc537274b34c56b19473a82869365a8dc51a8cad326af20d10",
   "files": {
     "BGUTILS-LICENSE.txt": "69bb14fee2d102583d6cccdf1e0e2ced4d2bbfd3c42b172e0a9f4e32a9c48c88",
     "YOUTUBEJS-LICENSE.txt": "bf82e28381c6256138322a79da2082db5ddb040b4b7009b520f08a419d722c69",
-    "android.mjs": "a41c0afa58d53b659f8a4730c1fcca24866f978c93947bddf0d786663b0cbe77",
+    "android.mjs": "d0d54be7656c3a81ac2fdf0f9697de3fa2992e6ef8d6b8c43df8b65c6d26f471",
     "attestation-core.mjs": "db45c3c1372987563e16e458220ff7555d03428ccf92fdd1c304c3bdc1685b02",
     "bgutils/core/BotGuardClient.js": "0d0b4b2453d40cacfc431c75c8c05fb6fe9f96a6b30bafdd389b7089d4675f9a",
     "bgutils/core/ChallengeFetcher.js": "a83b67567bb624f584a1f65492a6443eacd947f317e407d2c77a423480f7011e",

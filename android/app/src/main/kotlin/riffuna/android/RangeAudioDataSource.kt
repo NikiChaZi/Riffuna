@@ -17,6 +17,8 @@ import okhttp3.Response
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class RangeAudioDataSource(
     private val client: OkHttpClient,
+    private val onCall: (Call) -> Unit = {},
+    private val isCancelled: () -> Boolean = { false },
     private val headers: () -> Map<String, String>,
 ) : DataSource {
     companion object {
@@ -90,8 +92,11 @@ internal class RangeAudioDataSource(
                 client,
                 request,
                 audioOnly = true,
-                onCall = { call = it },
-                cancelled = { cancelled },
+                onCall = {
+                    call = it
+                    onCall(it)
+                },
+                cancelled = { cancelled || isCancelled() },
             )
         try {
             if (result.code != 206) throw IOException("Audio HTTP " + result.code)

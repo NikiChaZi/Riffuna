@@ -27,9 +27,21 @@ class BrowserMusicSource(
     private val context: Context,
     private val http: OkHttpClient,
     private val library: AndroidLibrary,
-    private val cachedAudio: (Track) -> AudioSource? = { null },
-) : MusicSource {
+    private val cachedAudio: suspend (Track) -> AudioSource? = { null },
+) : MusicSource, CatalogSource {
     private class RendererGone : IllegalStateException("WebView renderer stopped")
+
+    private val catalog by lazy { JsonCatalogSource(::request) }
+
+    override suspend fun searchCatalog(query: String, kind: CatalogKind) =
+        catalog.searchCatalog(query, kind)
+
+    override suspend fun trackArtists(track: Track) = catalog.trackArtists(track)
+
+    override suspend fun artistTracks(entry: CatalogEntry, cursor: String?) =
+        catalog.artistTracks(entry, cursor)
+
+    override suspend fun catalogPage(entry: CatalogEntry) = catalog.catalogPage(entry)
 
     private val requests = ConcurrentHashMap<Int, CompletableDeferred<JsonObject>>()
     private val ids = AtomicInteger()
@@ -564,6 +576,11 @@ class BrowserMusicSource(
         cachedAudio(track)?.let {
             return it
         }
+        return resolveRemote(track)
+    }
+
+    internal suspend fun resolveRemote(track: Track): AudioSource {
+        require(!track.isLocalFile)
         val now = System.currentTimeMillis()
         resolved[track.id]
             ?.takeIf { it.first > now }
@@ -594,6 +611,9 @@ class BrowserMusicSource(
     override suspend fun lyricsPacket(track: Track, force: Boolean) = lyrics.load(track, force)
 
     override suspend fun enrichLyrics(track: Track, base: LyricsPacket) = lyrics.enrich(track, base)
+
+    override suspend fun importLyrics(track: Track, text: String, format: String) =
+        lyrics.importLocal(track, text, format)
 
     override suspend fun localTracks(): List<Track> =
         runCatching { Json.decodeFromString<List<Track>>(library.setting("local-files", "[]")) }

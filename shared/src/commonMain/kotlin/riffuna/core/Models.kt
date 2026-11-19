@@ -349,6 +349,8 @@ interface RiffunaController {
 
     fun openPlaylist(id: Long)
 
+    suspend fun tracksForPlaylist(id: Long): List<Track>
+
     fun play(track: Track)
 
     fun enqueue(track: Track)

@@ -12,7 +12,10 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import riffuna.catalog.mayQueryOnlineLyrics
+import riffuna.catalog.validLyricsFileId
 import riffuna.core.*
+
+internal const val MAX_LOCAL_LYRIC_BYTES = 1_048_576
 
 internal class AndroidLyrics(
     private val http: OkHttpClient,
@@ -100,6 +103,13 @@ internal class AndroidLyrics(
 
     suspend fun load(track: Track, force: Boolean): LyricsPacket =
         withContext(Dispatchers.IO) {
+            if (track.validLyricsFileId()) {
+                runCatching { Json.decodeFromString<LyricsPacket>(readCache(localKey(track))) }
+                    .getOrNull()
+                    ?.let {
+                        return@withContext it
+                    }
+            }
             if (!track.mayQueryOnlineLyrics()) return@withContext LyricsPacket()
             val key = cacheKey(track)
             if (!force)
@@ -151,6 +161,35 @@ internal class AndroidLyrics(
                 )
             }
         }
+
+    suspend fun importLocal(track: Track, text: String, format: String): LyricsPacket =
+        withContext(Dispatchers.IO) {
+            require(track.validLyricsFileId())
+            require(text.encodeToByteArray().size <= MAX_LOCAL_LYRIC_BYTES)
+            val input = text.removePrefix("\uFEFF")
+            val lines =
+                when (format.lowercase()) {
+                    "lrc" -> LyricTiming.parseLrc(input)
+                    "ttml",
+                    "xml" -> AndroidLyricWords.parseTtml(input)
+                    else -> error("Unsupported lyric format")
+                }
+            require(lines.any { it.text.isNotBlank() })
+            val packet =
+                LyricsPacket(
+                    state = "synced",
+                    lines = lines,
+                    plainText = lines.joinToString("\n") { it.text },
+                    source = "local",
+                    timingSource =
+                        if (format.equals("lrc", ignoreCase = true)) "local_lrc" else "local_ttml",
+                    approximateWords = lines.none { it.words.isNotEmpty() },
+                )
+            writeCache(localKey(track), Json.encodeToString(packet))
+            packet
+        }
+
+    private fun localKey(track: Track): String = "lyrics:local:${track.id}"
 
     private fun fetch(url: okhttp3.HttpUrl): JsonElement? =
         http

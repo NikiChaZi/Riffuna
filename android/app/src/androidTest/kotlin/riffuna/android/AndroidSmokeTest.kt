@@ -10,6 +10,7 @@ import okhttp3.Request
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
+import riffuna.catalog.CatalogKind
 import riffuna.core.*
 
 @RunWith(AndroidJUnit4::class)
@@ -17,6 +18,34 @@ class AndroidSmokeTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context
         get() = instrumentation.targetContext
+
+    @Test
+    fun browserCatalogLoadsArtistSongsAndRelease(): Unit = runBlocking {
+        Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("liveNetwork") == "true")
+        val name = "catalog-test-${UUID.randomUUID()}.sqlite3"
+        val library = AndroidLibrary(context, name)
+        lateinit var source: BrowserMusicSource
+        instrumentation.runOnMainSync {
+            source = BrowserMusicSource(context, SourceHttp.client(), library)
+        }
+        try {
+            val artists = withTimeout(90_000) { source.searchCatalog("Дора", CatalogKind.ARTIST) }
+            val artist =
+                checkNotNull(artists.firstOrNull { it.title.equals("дора", ignoreCase = true) })
+            val profile = withTimeout(90_000) { source.catalogPage(artist) }
+            assertTrue(profile.tracks.isNotEmpty())
+            val songs = withTimeout(90_000) { source.artistTracks(artist) }
+            assertTrue(songs.tracks.size > 5 || songs.cursor != null || songs.partial)
+            val release = checkNotNull(profile.releases.firstOrNull())
+            val album = withTimeout(90_000) { source.catalogPage(release) }
+            assertEquals(release.id, album.entry.id)
+            assertTrue(album.tracks.isNotEmpty())
+        } finally {
+            instrumentation.runOnMainSync { source.close() }
+            library.close()
+            context.deleteDatabase(name)
+        }
+    }
 
     @Test
     fun sqliteRoundTripPreservesQueueLikesAndPlaylist() {
