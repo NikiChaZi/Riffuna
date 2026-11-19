@@ -234,74 +234,17 @@ class DesktopSource(private val home: Path, private val data: Path) :
         downloadWorker.close()
     }
 
-    override suspend fun searchCatalog(query: String, kind: CatalogKind): List<CatalogEntry> {
-        val text = query.trim()
-        if (text.isBlank() || text.length > 500 || text.contains("://")) return emptyList()
-        return request(
-                buildJsonObject {
-                    put("action", "catalog_search")
-                    put("query", text)
-                    put("kind", if (kind == CatalogKind.ARTIST) "artist" else "album")
-                }
-            )
-            .catalogRows("entries")
-            .mapNotNull { it.catalogEntry(kind) }
-    }
+    private val catalog by lazy { riffuna.catalog.JsonCatalogSource(::request) }
 
-    override suspend fun trackArtists(track: Track): List<CatalogEntry> {
-        if (track.isLocalFile) return emptyList()
-        return request(
-                buildJsonObject {
-                    put("action", "catalog_track_artists")
-                    put("id", track.id)
-                }
-            )
-            .catalogRows("entries")
-            .mapNotNull { it.catalogEntry(CatalogKind.ARTIST) }
-    }
+    override suspend fun searchCatalog(query: String, kind: CatalogKind) =
+        catalog.searchCatalog(query, kind)
 
-    override suspend fun artistTracks(entry: CatalogEntry, cursor: String?): ArtistTracksPage {
-        require(entry.kind == CatalogKind.ARTIST)
-        val result =
-            request(
-                buildJsonObject {
-                    put("action", "catalog_artist_tracks")
-                    put("id", entry.id)
-                    if (cursor != null) put("cursor", cursor)
-                }
-            )
-        check(result["retry"]?.jsonPrimitive?.booleanOrNull != true) {
-            "Could not load the next page"
-        }
-        return ArtistTracksPage(
-            tracks = result.catalogRows("tracks").mapNotNull(MusicRules::track),
-            cursor = result.catalogText("cursor").ifBlank { null },
-            partial = result["partial"]?.jsonPrimitive?.booleanOrNull == true,
-            expired = result["expired"]?.jsonPrimitive?.booleanOrNull == true,
-        )
-    }
+    override suspend fun trackArtists(track: Track) = catalog.trackArtists(track)
 
-    override suspend fun catalogPage(entry: CatalogEntry): CatalogPage {
-        val result =
-            request(
-                buildJsonObject {
-                    put(
-                        "action",
-                        if (entry.kind == CatalogKind.ARTIST) "catalog_artist" else "catalog_album",
-                    )
-                    put("id", entry.id)
-                }
-            )
-        return CatalogPage(
-            entry.copy(
-                title = result.catalogText("title").ifBlank { entry.title },
-                thumbnail = result.catalogText("thumbnail").ifBlank { entry.thumbnail },
-            ),
-            result.catalogRows("tracks").mapNotNull(MusicRules::track),
-            result.catalogRows("releases").mapNotNull { it.catalogEntry(CatalogKind.ALBUM) },
-            (result["artist"] as? JsonObject)?.catalogEntry(CatalogKind.ARTIST),
-        )
-    }
+    override suspend fun artistTracks(entry: CatalogEntry, cursor: String?) =
+        catalog.artistTracks(entry, cursor)
+
+    override suspend fun catalogPage(entry: CatalogEntry) = catalog.catalogPage(entry)
 
     override suspend fun search(query: String, limit: Int): List<Track> =
         searchSorted(query, limit, SearchOrder.RELEVANCE)
@@ -468,8 +411,12 @@ class DesktopSource(private val home: Path, private val data: Path) :
                 transport.releaseCurrent()
                 return AudioSource(it.toUri().toString())
             }
-        prepareRangeBridge()
-        return transport.bind(track.id, resolveStream(track))
+        return coroutineScope {
+            val bridge = async { prepareRangeBridge() }
+            val stream = resolveStream(track)
+            bridge.await()
+            transport.bind(track.id, stream)
+        }
     }
 
     internal suspend fun saveOffline(

@@ -11,7 +11,10 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.cache.*
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import java.io.File
 import kotlinx.coroutines.*
@@ -44,12 +47,28 @@ class AndroidAudio(
             StandaloneDatabaseProvider(context),
         )
     private val data =
-        CacheDataSource.Factory()
-            .setCache(cache)
-            .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context, remote))
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        DefaultDataSource.Factory(
+            context,
+            CacheDataSource.Factory()
+                .setCache(cache)
+                .setUpstreamDataSourceFactory(remote)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR),
+        )
+    private val loudness = LoudnessProcessor()
+    private val renderers =
+        object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean,
+            ): AudioSink =
+                DefaultAudioSink.Builder(context)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .setAudioProcessors(arrayOf(loudness))
+                    .build()
+        }
     val player =
-        ExoPlayer.Builder(context)
+        ExoPlayer.Builder(context, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(data))
             .build()
             .apply {
@@ -260,6 +279,10 @@ class AndroidAudio(
         player.volume = volume.coerceIn(0f, 1f)
     }
 
+    override fun setLoudnessNormalization(enabled: Boolean) {
+        loudness.enabled = enabled
+    }
+
     override fun close() {
         generation++
         scope.cancel()
@@ -294,7 +317,15 @@ class AppGraph(
     val http = SourceHttp.client()
     val library = AndroidLibrary(context, libraryName)
     val audio = AndroidAudio(context, http, cacheName) { controller.state.value.current }
-    val source = BrowserMusicSource(context, http, library, audio::cached)
+    private val offlineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    internal val offline: AndroidOffline by lazy {
+        val storageName = if (cacheName == "audio") "offline-audio" else "$cacheName-offline"
+        AndroidOffline(context, offlineScope, storageName, source::resolveRemote)
+    }
+    val source: BrowserMusicSource =
+        BrowserMusicSource(context, http, library) { track ->
+            withContext(Dispatchers.IO) { offline.findForPlayback(track.id) ?: audio.cached(track) }
+        }
     lateinit var controller: LocalController
         private set
 

@@ -419,9 +419,9 @@ internal fun TrackArtistDialog(
             Box(Modifier.fillMaxWidth().heightIn(min = 135.dp, max = 320.dp)) {
                 key(track.id) {
                     CatalogLoad({ source.findTrackArtists(track) }) { result ->
+                        val direct = result.direct
                         when {
-                            result.direct != null ->
-                                LaunchedEffect(result.direct) { onOpen(result.direct) }
+                            direct != null -> LaunchedEffect(direct) { onOpen(direct) }
                             result.candidates.isEmpty() ->
                                 Text("В каталоге нет подходящих профилей.")
                             else ->

@@ -971,6 +971,9 @@ class LocalController(
         applyNavigation(Navigation(LibraryView.PLAYLIST, id), true)
     }
 
+    override suspend fun tracksForPlaylist(id: Long): List<Track> =
+        withContext(ioDispatcher) { library.playlistTracks(id) }
+
     override fun play(track: Track) = startPlayback(track)
 
     private fun startPlayback(

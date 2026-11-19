@@ -44,6 +44,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import riffuna.catalog.CatalogSource
 import riffuna.core.*
 
 private val Coral = Color(0xFFFF875F)
@@ -141,6 +143,10 @@ internal fun MobileApp(
     importFiles: () -> Unit,
     onImportCollection: () -> Unit,
     onExportCollection: () -> Unit,
+    catalogSource: CatalogSource? = null,
+    offline: AndroidOffline? = null,
+    onImportLyrics: ((Track) -> Unit)? = null,
+    onOpenReleases: (() -> Unit)? = null,
 ) {
     val screen =
         remember(controller) { controller.state.map { it.screenSnapshot() }.distinctUntilChanged() }
@@ -150,12 +156,38 @@ internal fun MobileApp(
     var editingPlaylist by remember { mutableStateOf<PlaylistSummary?>(null) }
     var deletingPlaylist by remember { mutableStateOf<PlaylistSummary?>(null) }
     var settings by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val navigation = remember(catalogSource) { AndroidCatalogNavigation() }
+    var searchTab by remember { mutableStateOf(AndroidCatalogTab.TRACKS) }
+    var searchInput by remember { mutableStateOf(controller.state.value.query) }
+    var catalogQuery by remember { mutableStateOf("") }
+    var downloads by remember { mutableStateOf(false) }
+    val openArtist: ((Track) -> Unit)? =
+        catalogSource?.let {
+            { track ->
+                val fromPlayer = controller.state.value.expanded
+                if (fromPlayer) controller.openNowPlaying(false)
+                navigation.open(AndroidCatalogDestination.ArtistForTrack(track), fromPlayer)
+            }
+        }
+    val downloadTrack: ((Track) -> Unit)? = offline?.let { { track -> it.enqueue(track) } }
+    val backFromCatalog = { if (navigation.back()) controller.openNowPlaying(true) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(state.toast) { if (state.toast.isNotBlank()) snackbar.showSnackbar(state.toast) }
-    BackHandler(state.expanded || state.selectedIds.isNotEmpty() || state.canGoBack) {
-        if (state.expanded) controller.openNowPlaying(false)
-        else if (state.selectedIds.isNotEmpty()) controller.clearSelection()
-        else controller.navigateBack()
+    BackHandler(
+        state.expanded ||
+            downloads ||
+            navigation.current != null ||
+            state.selectedIds.isNotEmpty() ||
+            state.canGoBack
+    ) {
+        when {
+            state.expanded -> controller.openNowPlaying(false)
+            downloads -> downloads = false
+            navigation.current != null -> backFromCatalog()
+            state.selectedIds.isNotEmpty() -> controller.clearSelection()
+            else -> controller.navigateBack()
+        }
     }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
@@ -199,7 +231,11 @@ internal fun MobileApp(
                                                     LibraryView.LOCAL,
                                                     LibraryView.PLAYLIST,
                                                 )),
-                                onClick = { controller.showView(view) },
+                                onClick = {
+                                    navigation.clear()
+                                    downloads = false
+                                    controller.showView(view)
+                                },
                                 icon = { Icon(icon, null) },
                                 label = { Text(label, maxLines = 1) },
                                 colors =
@@ -219,6 +255,38 @@ internal fun MobileApp(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
+            val destination = navigation.current
+            if (downloads && offline != null) {
+                AndroidOfflineScreen(
+                    offline,
+                    onBack = { downloads = false },
+                    onPlay = controller::play,
+                )
+                return@Column
+            }
+            if (destination != null && catalogSource != null) {
+                AndroidCatalogScreen(
+                    catalogSource,
+                    destination,
+                    navigation,
+                    onBack = backFromCatalog,
+                    play = { tracks, index ->
+                        controller.playContext(tracks, index, exactRecordings = true)
+                    },
+                    trackRow = { track, play ->
+                        TrackRow(
+                            track,
+                            state,
+                            controller,
+                            onPlaylist = { playlistTracks = listOf(track) },
+                            openArtist = openArtist,
+                            download = downloadTrack,
+                            catalogPlay = play,
+                        )
+                    },
+                )
+                return@Column
+            }
             Row(
                 Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -316,6 +384,8 @@ internal fun MobileApp(
                                     state,
                                     controller,
                                     onPlaylist = { playlistTracks = listOf(track) },
+                                    openArtist = openArtist,
+                                    download = downloadTrack,
                                 )
                             }
                         } else
@@ -345,6 +415,8 @@ internal fun MobileApp(
                                     state,
                                     controller,
                                     onPlaylist = { playlistTracks = listOf(track) },
+                                    openArtist = openArtist,
+                                    download = downloadTrack,
                                 )
                             }
                         }
@@ -450,6 +522,18 @@ internal fun MobileApp(
                                                     controller.duplicatePlaylist(p.id)
                                                 },
                                             )
+                                            if (offline != null)
+                                                DropdownMenuItem(
+                                                    text = { Text("Скачать плейлист") },
+                                                    onClick = {
+                                                        menu = false
+                                                        scope.launch {
+                                                            offline.enqueue(
+                                                                controller.tracksForPlaylist(p.id)
+                                                            )
+                                                        }
+                                                    },
+                                                )
                                             DropdownMenuItem(
                                                 text = { Text("Удалить") },
                                                 onClick = {
@@ -466,23 +550,40 @@ internal fun MobileApp(
                 }
                 else -> {
                     if (state.view == LibraryView.SEARCH) {
-                        var query by remember { mutableStateOf(state.query) }
+                        fun submit() {
+                            if (searchTab.kind == null) controller.search(searchInput)
+                            else catalogQuery = searchInput.trim()
+                        }
                         OutlinedTextField(
-                            query,
-                            { query = it },
+                            searchInput,
+                            { searchInput = it },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
-                            placeholder = { Text("Трек или исполнитель") },
+                            placeholder = { Text("Трек, исполнитель или релиз") },
                             shape = RoundedCornerShape(18.dp),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions =
-                                KeyboardActions(onSearch = { controller.search(query) }),
+                            keyboardActions = KeyboardActions(onSearch = { submit() }),
                             trailingIcon = {
-                                IconButton(onClick = { controller.search(query) }) {
+                                IconButton(onClick = { submit() }) {
                                     Icon(Icons.Outlined.Search, "Найти")
                                 }
                             },
                         )
+                        if (catalogSource != null) {
+                            AndroidCatalogTabs(searchTab) { tab ->
+                                if (tab != searchTab) {
+                                    searchTab = tab
+                                    if (searchInput.isNotBlank()) submit()
+                                }
+                            }
+                            val kind = searchTab.kind
+                            if (kind != null) {
+                                AndroidCatalogResults(catalogSource, catalogQuery, kind) { entry ->
+                                    navigation.open(AndroidCatalogDestination.Detail(entry))
+                                }
+                                return@Column
+                            }
+                        }
                         Spacer(Modifier.height(16.dp))
                     }
                     val title =
@@ -576,7 +677,13 @@ internal fun MobileApp(
                             )
                         }
                     else if (state.view == LibraryView.QUEUE)
-                        QueueTracks(state, controller, Modifier.weight(1f)) {
+                        QueueTracks(
+                            state,
+                            controller,
+                            Modifier.weight(1f),
+                            openArtist,
+                            downloadTrack,
+                        ) {
                             playlistTracks = listOf(it)
                         }
                     else
@@ -591,6 +698,8 @@ internal fun MobileApp(
                                         state,
                                         controller,
                                         onPlaylist = { playlistTracks = listOf(track) },
+                                        openArtist = openArtist,
+                                        download = downloadTrack,
                                     )
                                 }
                                 if (state.view == LibraryView.SEARCH && state.canLoadMore)
@@ -609,7 +718,13 @@ internal fun MobileApp(
             }
         }
     }
-    if (state.expanded) NowPlaying(controller) { controller.openNowPlaying(false) }
+    if (state.expanded)
+        NowPlaying(
+            controller,
+            close = { controller.openNowPlaying(false) },
+            onArtist = openArtist,
+            onImportLyrics = onImportLyrics,
+        )
     if (state.versionReference != null) RecordingVersions(state, controller)
     editingPlaylist?.let { playlist ->
         var name by remember(playlist.id) { mutableStateOf(playlist.name) }
@@ -670,14 +785,33 @@ internal fun MobileApp(
             onDismissRequest = { settings = false },
             title = { Text("Riffuna на твоём устройстве") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
                     Text(
-                        "Библиотека хранится на телефоне. Полностью загруженные треки доступны из кэша до 512 МБ. Android может освободить этот кэш при нехватке места."
+                        "Кэш воспроизведения занимает до 512 МБ. Закреплённые треки хранятся отдельно в «Скачанном»."
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Уменьшить анимации", Modifier.weight(1f))
                         Switch(state.reducedMotion, controller::setReducedMotion)
                     }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Нормализация громкости", Modifier.weight(1f))
+                        Switch(
+                            state.playback.normalizeLoudness,
+                            controller::setLoudnessNormalization,
+                        )
+                    }
+                    if (offline != null)
+                        TextButton(
+                            onClick = {
+                                settings = false
+                                downloads = true
+                            }
+                        ) {
+                            Text("Скачанное")
+                        }
                     Text(
                         "Перенос коллекции включает лайки, плейлисты и выбранные версии записей.",
                         color = Color(0xFFAFBAAD),
@@ -699,6 +833,10 @@ internal fun MobileApp(
                     ) {
                         Text("Импортировать коллекцию")
                     }
+                    if (onOpenReleases != null)
+                        TextButton(onClick = onOpenReleases) {
+                            Text("Проверить обновления на GitHub")
+                        }
                 }
             },
             confirmButton = { TextButton(onClick = { settings = false }) { Text("Готово") } },
@@ -808,6 +946,8 @@ private fun QueueTracks(
     state: AppState,
     c: LocalController,
     modifier: Modifier,
+    openArtist: ((Track) -> Unit)?,
+    download: ((Track) -> Unit)?,
     onPlaylist: (Track) -> Unit,
 ) {
     val list = rememberLazyListState()
@@ -894,6 +1034,8 @@ private fun QueueTracks(
                         }
                     },
                 dragHandle = handle,
+                openArtist = openArtist,
+                download = download,
             )
         }
     }
@@ -1023,10 +1165,14 @@ private fun TrackRow(
     onPlaylist: () -> Unit,
     modifier: Modifier = Modifier,
     dragHandle: Modifier? = null,
+    openArtist: ((Track) -> Unit)? = null,
+    download: ((Track) -> Unit)? = null,
+    catalogPlay: (() -> Unit)? = null,
 ) {
+    val catalog = catalogPlay != null
     var menu by remember { mutableStateOf(false) }
     val current = track.id == state.current?.id
-    val isSelected = track.id in state.selectedIds
+    val isSelected = !catalog && track.id in state.selectedIds
     val background by
         animateColorAsState(
             if (current || isSelected) Panel else Color.Transparent,
@@ -1041,11 +1187,12 @@ private fun TrackRow(
             .semantics { selected = isSelected }
             .combinedClickable(
                 onLongClick = {
-                    if (state.view == LibraryView.HOME) menu = true
+                    if (catalog || state.view == LibraryView.HOME) menu = true
                     else c.selectTrack(track.id, control = true, shift = false)
                 },
                 onClick = {
-                    if (state.selectedIds.isNotEmpty())
+                    if (catalogPlay != null) catalogPlay()
+                    else if (state.selectedIds.isNotEmpty())
                         c.selectTrack(track.id, control = true, shift = false)
                     else if (state.view == LibraryView.QUEUE) c.playQueueTrack(track.id)
                     else c.play(track)
@@ -1093,7 +1240,23 @@ private fun TrackRow(
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "Действия") }
             DropdownMenu(menu, { menu = false }) {
-                if (!track.id.startsWith("local:"))
+                if (openArtist != null && track.artist.isNotBlank())
+                    DropdownMenuItem(
+                        text = { Text("К исполнителю") },
+                        onClick = {
+                            menu = false
+                            openArtist(track)
+                        },
+                    )
+                if (download != null && !track.isLocalFile)
+                    DropdownMenuItem(
+                        text = { Text("Скачать трек") },
+                        onClick = {
+                            menu = false
+                            download(track)
+                        },
+                    )
+                if (!track.isLocalFile)
                     DropdownMenuItem(
                         text = { Text("Другие записи") },
                         onClick = {
@@ -1122,7 +1285,7 @@ private fun TrackRow(
                         menu = false
                     },
                 )
-                if (state.view == LibraryView.QUEUE)
+                if (!catalog && state.view == LibraryView.QUEUE)
                     DropdownMenuItem(
                         text = { Text("Убрать из очереди") },
                         onClick = {
@@ -1130,7 +1293,7 @@ private fun TrackRow(
                             menu = false
                         },
                     )
-                if (state.view == LibraryView.QUEUE) {
+                if (!catalog && state.view == LibraryView.QUEUE) {
                     DropdownMenuItem(
                         text = { Text("Выше в очереди") },
                         onClick = {
@@ -1146,7 +1309,7 @@ private fun TrackRow(
                         },
                     )
                 }
-                if (state.view == LibraryView.PLAYLIST)
+                if (!catalog && state.view == LibraryView.PLAYLIST)
                     DropdownMenuItem(
                         text = { Text("Убрать из плейлиста") },
                         onClick = {
@@ -1216,7 +1379,12 @@ private fun MiniPlayer(c: LocalController) {
 }
 
 @Composable
-private fun NowPlaying(c: LocalController, close: () -> Unit) {
+private fun NowPlaying(
+    c: LocalController,
+    close: () -> Unit,
+    onArtist: ((Track) -> Unit)?,
+    onImportLyrics: ((Track) -> Unit)?,
+) {
     val state by c.state.collectAsStateWithLifecycle()
     var showLyrics by remember { mutableStateOf(false) }
     var entered by remember { mutableStateOf(false) }
@@ -1250,6 +1418,11 @@ private fun NowPlaying(c: LocalController, close: () -> Unit) {
                         fontSize = 12.sp,
                         letterSpacing = 2.sp,
                     )
+                    val current = state.current
+                    if (current != null && showLyrics && onImportLyrics != null)
+                        IconButton(onClick = { onImportLyrics(current) }) {
+                            Icon(Icons.Outlined.FileOpen, "Импортировать текст песни")
+                        }
                     IconButton(onClick = { showLyrics = !showLyrics }) {
                         Icon(
                             Icons.AutoMirrored.Outlined.Notes,
@@ -1302,7 +1475,22 @@ private fun NowPlaying(c: LocalController, close: () -> Unit) {
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(state.current?.artist.orEmpty(), fontSize = 17.sp, color = Color(0xFFAFBAAD))
+                val current = state.current
+                if (current != null && current.artist.isNotBlank() && onArtist != null) {
+                    TextButton(
+                        onClick = { onArtist(current) },
+                        contentPadding = PaddingValues(0.dp),
+                    ) {
+                        Text(
+                            current.artist,
+                            fontSize = 17.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                } else {
+                    Text(current?.artist.orEmpty(), fontSize = 17.sp, color = Color(0xFFAFBAAD))
+                }
                 if (state.playbackError != null)
                     Text(
                         state.playbackError.orEmpty(),

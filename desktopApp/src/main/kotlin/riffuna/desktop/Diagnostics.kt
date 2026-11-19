@@ -6,7 +6,7 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import riffuna.core.Track
 
-/** Offline package verification, using a private temporary library and no windows. */
+/** Headless package verification with a private temporary library. */
 object Diagnostics {
     fun run(home: Path, report: Path, live: Boolean = false): Int = runBlocking {
         val data = Files.createTempDirectory("riffuna-package-check")
@@ -41,6 +41,7 @@ object Diagnostics {
                 }
                 val source = DesktopSource(home, data)
                 try {
+                    put("source_stage", "capabilities")
                     val capability =
                         source.request(buildJsonObject { put("action", "capabilities") })
                     check(
@@ -50,21 +51,27 @@ object Diagnostics {
                     put("source_provider", capability["provider"]!!.jsonPrimitive.content)
                     put("python_runtime", false)
                     put("qt_runtime", false)
+                    put("source_stage", "range_bridge")
                     source.verifyTransport()
                     put("audio_range_bridge", true)
+                    put("source_stage", "ready")
                     if (live) {
-                        val started = System.nanoTime()
                         put("live_stage", "search")
+                        val searchStarted = System.nanoTime()
                         val tracks = withTimeout(90000) { source.search("Дора Понарошку", 10) }
+                        put("live_search_ms", elapsedMs(searchStarted))
                         check(tracks.isNotEmpty())
                         put("live_search_results", tracks.size)
-                        put("live_stage", "resolve")
-                        val stream = withTimeout(90000) { source.resolve(tracks.first()) }
-                        put("live_resolve_ms", (System.nanoTime() - started) / 1_000_000)
                         val player = MpvAudio(home.resolve("vendor/libmpv/libmpv-2.dll"))
+                        val coldSource = DesktopSource(home, data.resolve("cold-playback"))
                         try {
-                            put("live_stage", "playback")
                             player.setVolume(0f)
+                            put("live_stage", "resolve")
+                            val resolveStarted = System.nanoTime()
+                            val stream = withTimeout(90000) { coldSource.resolve(tracks.first()) }
+                            put("live_resolve_ms", elapsedMs(resolveStarted))
+                            put("live_stage", "playback")
+                            val openStarted = System.nanoTime()
                             player.open(stream)
                             withTimeout(40000) {
                                 while (
@@ -73,6 +80,8 @@ object Diagnostics {
                                 ) delay(100)
                             }
                             check(player.state.value.error == null)
+                            put("live_open_to_500ms_ms", elapsedMs(openStarted))
+                            put("live_resolve_to_500ms_ms", elapsedMs(resolveStarted))
                             put("live_audio_started", true)
                             put("live_stage", "seek")
                             player.pause()
@@ -94,7 +103,7 @@ object Diagnostics {
                                         player.state.value.error == null
                                 ) delay(100)
                             }
-                            check(player.state.value.playing)
+                            check(player.state.value.error == null && player.state.value.playing)
                             put("live_resume", true)
                             put("live_stage", "complete")
                         } catch (error: Throwable) {
@@ -107,6 +116,7 @@ object Diagnostics {
                             throw error
                         } finally {
                             player.close()
+                            coldSource.close()
                         }
                     }
                 } finally {
@@ -153,4 +163,6 @@ object Diagnostics {
         Files.writeString(output, result.toString())
         if (result["status"]?.jsonPrimitive?.content == "ok") 0 else 1
     }
+
+    private fun elapsedMs(started: Long): Long = (System.nanoTime() - started) / 1_000_000
 }
